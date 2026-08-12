@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -19,5 +19,18 @@ export class AiController {
   @Get('portrait')
   getPortrait(@CurrentUser() user: AuthUser) {
     return this.aiService.getPortrait(user.id);
+  }
+
+  @Post('plan-action')
+  generatePlanAction(
+    @CurrentUser() user: AuthUser,
+    @Body('granddomaines') granddomaines?: string[],
+  ) {
+    return this.aiService.generatePlanAction(user.id, granddomaines);
+  }
+
+  @Get('plan-action')
+  getPlanAction(@CurrentUser() user: AuthUser) {
+    return this.aiService.getPlanAction(user.id);
   }
 }
