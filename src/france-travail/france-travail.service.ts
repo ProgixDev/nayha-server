@@ -15,22 +15,32 @@ const ROME_APIS = [
     params:
       'champs=code&champs=libelle&champs=definition&champs=accesemploi' +
       '&champs=domaineprofessionnel(libelle,code,granddomaine(libelle,code))' +
-      '&champs=appellations(libelle,code)' +
-      '&champs=emploireglemente&champs=emploicadre&champs=riasecmajeur&champs=riasecmineur',
+      '&champs=appellations(emploireglemente,transitionecologiquedetaillee,libelle,secondaire,code,emploicadre,transitionecologique,transitionnumerique,transitiondemographique,classification,romeparent,libellecourt)' +
+      '&champs=emploireglemente&champs=emploicadre&champs=riasecmajeur&champs=riasecmineur' +
+      '&champs=codeisco&champs=formacodes(libelle,code)&champs=label' +
+      '&champs=transitiondemographique&champs=transitionecologique&champs=transitionecologiquedetaillee&champs=transitionnumerique',
     primaryKey: 'code',
   },
   {
     table: 'rome_competences',
     scope: 'api_rome-competencesv1 nomenclatureRome',
     url: 'https://api.francetravail.io/partenaire/rome-competences/v1/competences/competence',
-    params: '',
+    params:
+      'champs=@competencedetaillee(riasecmineur,macrocompetence(libelle,transferable,@macrosavoiretreprofessionnel(qualiteprofessionnelle),souscategorie,code,riasecmineur,codearborescence,objectif(libelle,enjeu(libelle,code,codearborescence,domainecompetence(libelle,code,codearborescence)),code,codearborescence),codeogr,maturite,riasecmajeur),riasecmajeur)' +
+      '&champs=@macrocompetence(transferable,@macrosavoiretreprofessionnel(qualiteprofessionnelle),souscategorie,riasecmineur,codearborescence,objectif(libelle,enjeu(libelle,code,codearborescence,domainecompetence(libelle,code,codearborescence)),code,codearborescence),maturite,riasecmajeur)' +
+      '&champs=@savoir(categoriesavoir(libelle,categorie(libelle,code),code))' +
+      '&champs=codeogr&champs=code&champs=competenceesco(libelle,uri)&champs=datefin&champs=libelle&champs=obsolete&champs=transitionecologique&champs=transitionnumerique',
     primaryKey: 'code',
   },
   {
     table: 'rome_fiches_metiers',
     scope: 'api_rome-fiches-metiersv1 nomenclatureRome',
     url: 'https://api.francetravail.io/partenaire/rome-fiches-metiers/v1/fiches-rome/fiche-metier',
-    params: '',
+    params:
+      'champs=groupescompetencesmobilisees(competences(libelle,code),enjeu(libelle,code))' +
+      '&champs=code' +
+      '&champs=groupessavoirs(savoirs(libelle,code),categoriesavoirs(libelle,code))' +
+      '&champs=metier(libelle,code)',
     primaryKey: 'code',
   },
   {
@@ -205,6 +215,142 @@ export class FranceTravailService {
 
     if (error) throw new Error(`Fiche ${codeRome} not found`);
     return data.data;
+  }
+
+  /**
+   * Build a complete fiche métier by combining all ROME tables.
+   */
+  async getFullFicheMetier(codeRome: string) {
+    // Fetch métier + fiche in parallel
+    const [metierResult, ficheResult] = await Promise.all([
+      this.supabase
+        .from('rome_metiers')
+        .select('data')
+        .eq('code', codeRome)
+        .single(),
+      this.supabase
+        .from('rome_fiches_metiers')
+        .select('data')
+        .eq('code', codeRome)
+        .single(),
+    ]);
+
+    if (metierResult.error || !metierResult.data) {
+      throw new Error(`Métier ${codeRome} not found`);
+    }
+
+    const metier = metierResult.data.data;
+    const fiche = ficheResult.data?.data;
+
+    // Extract competence codes from fiche to enrich with full details
+    const compCodes: string[] = [];
+    const competencesParEnjeu: {
+      enjeu: string;
+      competences: { code: string; libelle: string; type: string }[];
+    }[] = [];
+
+    if (fiche?.groupesCompetencesMobilisees) {
+      for (const group of fiche.groupesCompetencesMobilisees) {
+        const enjeuLabel = group.enjeu?.libelle || 'Autre';
+        const comps = (group.competences || []).map(
+          (c: { code: string; libelle: string; type?: string }) => {
+            compCodes.push(c.code);
+            return {
+              code: c.code,
+              libelle: c.libelle,
+              type: c.type || 'COMPETENCE-DETAILLEE',
+            };
+          },
+        );
+        competencesParEnjeu.push({ enjeu: enjeuLabel, competences: comps });
+      }
+    }
+
+    // Fetch full competence details for transferability info
+    let transferableSkills: string[] = [];
+    if (compCodes.length > 0) {
+      const { data: compDetails } = await this.supabase
+        .from('rome_competences')
+        .select('data')
+        .in('code', compCodes);
+
+      if (compDetails) {
+        transferableSkills = compDetails
+          .filter((c) => c.data.macroCompetence?.transferable === true)
+          .map((c) => c.data.libelle as string);
+      }
+    }
+
+    // Build savoirs
+    const savoirsParCategorie: {
+      categorie: string;
+      savoirs: string[];
+    }[] = [];
+
+    if (fiche?.groupesSavoirs) {
+      for (const group of fiche.groupesSavoirs) {
+        savoirsParCategorie.push({
+          categorie: group.categorieSavoirs?.libelle || 'Autre',
+          savoirs: (group.savoirs || []).map(
+            (s: { libelle: string }) => s.libelle,
+          ),
+        });
+      }
+    }
+
+    return {
+      // Identity
+      code: metier.code,
+      titre: metier.libelle,
+      definition: metier.definition || 'N/A',
+
+      // Classification
+      domaine: metier.domaineProfessionnel?.libelle || 'N/A',
+      grandDomaine: metier.domaineProfessionnel?.grandDomaine?.libelle || 'N/A',
+      riasec: {
+        majeur: metier.riasecMajeur || 'N/A',
+        mineur: metier.riasecMineur || 'N/A',
+      },
+      emploiCadre: metier.emploiCadre ?? false,
+      transitionEcologique: metier.transitionEcologique ?? false,
+
+      // Access
+      accesEmploi: metier.accesEmploi || 'N/A',
+      formacodes: (metier.formacodes || []).map(
+        (f: { code: string; libelle: string }) => f.libelle,
+      ),
+
+      // Job title variants
+      appellations: (metier.appellations || []).map(
+        (a: { libelle: string; classification: string }) => ({
+          titre: a.libelle,
+          type: a.classification || 'PRINCIPALE',
+        }),
+      ),
+
+      // Competences (from fiche)
+      competencesParEnjeu,
+      transferableSkills,
+
+      // Knowledge (from fiche)
+      savoirsParCategorie,
+
+      // Data we don't have yet — N/A placeholders
+      salaire: {
+        min: 'N/A',
+        median: 'N/A',
+        max: 'N/A',
+        source: 'N/A',
+      },
+      tensionMarche: {
+        offres: 'N/A',
+        demandeurs: 'N/A',
+        indicateur: 'N/A',
+      },
+      formations: 'N/A',
+      evolutionsPossibles: 'N/A',
+      conditionsTravail: 'N/A',
+    };
   }
 
   async getContextesTravail() {

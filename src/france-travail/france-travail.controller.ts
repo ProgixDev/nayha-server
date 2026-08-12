@@ -40,6 +40,11 @@ export class FranceTravailController {
     return this.ftService.getFicheMetier(code);
   }
 
+  @Get('fiches-metiers/:code/full')
+  getFullFicheMetier(@Param('code') code: string) {
+    return this.ftService.getFullFicheMetier(code);
+  }
+
   @Get('contextes-travail')
   getContextesTravail() {
     return this.ftService.getContextesTravail();
