@@ -221,8 +221,8 @@ export class FranceTravailService {
    * Build a complete fiche métier by combining all ROME tables.
    */
   async getFullFicheMetier(codeRome: string) {
-    // Fetch métier + fiche in parallel
-    const [metierResult, ficheResult] = await Promise.all([
+    // Fetch métier (DB) + fiche (DB) + full métier from API (for contextesTravail) in parallel
+    const [metierResult, ficheResult, apiMetier] = await Promise.all([
       this.supabase
         .from('rome_metiers')
         .select('data')
@@ -233,6 +233,7 @@ export class FranceTravailService {
         .select('data')
         .eq('code', codeRome)
         .single(),
+      this.fetchMetierFromApi(codeRome),
     ]);
 
     if (metierResult.error || !metierResult.data) {
@@ -349,8 +350,57 @@ export class FranceTravailService {
       },
       formations: 'N/A',
       evolutionsPossibles: 'N/A',
-      conditionsTravail: 'N/A',
+      conditionsTravail: this.buildConditionsTravail(
+        apiMetier?.contextesTravail || [],
+      ),
     };
+  }
+
+  /**
+   * Fetch a single métier from France Travail API (no champs filter)
+   * to get fields like contextesTravail that aren't available via champs.
+   */
+  private async fetchMetierFromApi(
+    codeRome: string,
+  ): Promise<Record<string, any> | null> {
+    try {
+      const token = await this.getToken(
+        'api_rome-metiersv1 nomenclatureRome',
+      );
+      const res = await fetch(
+        `https://api.francetravail.io/partenaire/rome-metiers/v1/metiers/metier/${codeRome}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      this.logger.warn(`Failed to fetch métier ${codeRome} from API: ${e}`);
+      return null;
+    }
+  }
+
+  private buildConditionsTravail(
+    contextes: { code: string; libelle: string; categorie: string }[],
+  ): Record<string, string[]> | 'N/A' {
+    if (!contextes.length) return 'N/A';
+
+    const grouped: Record<string, string[]> = {};
+    const categoryLabels: Record<string, string> = {
+      CONDITIONS_TRAVAIL: 'Conditions de travail',
+      HORAIRE_ET_DUREE_TRAVAIL: 'Horaires et durée',
+      LIEU_ET_DEPLACEMENT: 'Lieu et déplacements',
+      STATUT_EMPLOI: "Statut d'emploi",
+      TYPE_BENEFICIAIRE: 'Public accompagné',
+      TYPE_STRUCTURE_ACCUEIL: "Structures d'exercice",
+    };
+
+    for (const ctx of contextes) {
+      const label = categoryLabels[ctx.categorie] || ctx.categorie;
+      if (!grouped[label]) grouped[label] = [];
+      grouped[label].push(ctx.libelle);
+    }
+
+    return grouped;
   }
 
   async getContextesTravail() {
@@ -360,5 +410,340 @@ export class FranceTravailService {
 
     if (error) throw new Error(error.message);
     return data.map((row) => row.data);
+  }
+
+  // ──────────────────────────────────────────────
+  // IMT — Marché du travail (stats-offres-demandes-emploi)
+  // ──────────────────────────────────────────────
+
+  private readonly IMT_BASE =
+    'https://api.francetravail.io/partenaire/stats-offres-demandes-emploi/v1';
+  private readonly IMT_SCOPE =
+    'api_stats-offres-demandes-emploiv1 offresetdemandesemploi';
+
+  async getSalaires(
+    codeRome: string,
+    codeTypeTerritoire = 'NAT',
+    codeTerritoire = 'FR',
+  ) {
+    const token = await this.getToken(this.IMT_SCOPE);
+    const url = `${this.IMT_BASE}/indicateur/salaire-rome-fap/${codeTypeTerritoire}/${codeTerritoire}?codeRome=${codeRome}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) {
+      this.logger.warn(`getSalaires failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  async getStatOffres(
+    codeRome: string,
+    codeTypeTerritoire = 'NAT',
+    codeTerritoire = 'FR',
+  ) {
+    const token = await this.getToken(this.IMT_SCOPE);
+    const res = await fetch(`${this.IMT_BASE}/indicateur/stat-offres`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        codeTypeTerritoire,
+        codeTerritoire,
+        codeTypeActivite: 'ROME',
+        codeActivite: codeRome,
+        codeTypePeriode: 'TRIMESTRE',
+        codeTypeNomenclature: 'ORIGINEOFF',
+      }),
+    });
+    if (!res.ok) {
+      this.logger.warn(`getStatOffres failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  async getPerspectivesRecrutement(
+    codeRome: string,
+    codeTypeTerritoire = 'NAT',
+    codeTerritoire = 'FR',
+  ) {
+    const token = await this.getToken(this.IMT_SCOPE);
+    const res = await fetch(
+      `${this.IMT_BASE}/indicateur/stat-perspective-employeur`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          codeTypeTerritoire,
+          codeTerritoire,
+          codeTypeActivite: 'ROME',
+          codeActivite: codeRome,
+          codeTypePeriode: 'ANNEE',
+          codeTypeNomenclature: 'TYPE_TENSION',
+        }),
+      },
+    );
+    if (!res.ok) {
+      this.logger.warn(`getPerspectivesRecrutement failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  async getDynamiqueEmploi(
+    codeTypeTerritoire = 'NAT',
+    codeTerritoire = 'FR',
+  ) {
+    const token = await this.getToken(this.IMT_SCOPE);
+    const res = await fetch(
+      `${this.IMT_BASE}/indicateur/stat-dynamique-emploi`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          codeTypeTerritoire,
+          codeTerritoire,
+          codeTypeActivite: 'MOYENNE',
+          codeActivite: 'MOYENNE',
+          codeTypePeriode: 'TRIMESTRE',
+        }),
+      },
+    );
+    if (!res.ok) {
+      this.logger.warn(`getDynamiqueEmploi failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  // ──────────────────────────────────────────────
+  // La Bonne Boîte v2
+  // ──────────────────────────────────────────────
+
+  private readonly LBB_BASE =
+    'https://api.francetravail.io/partenaire/labonneboite/v2';
+  private readonly LBB_SCOPE = 'api_labonneboitev2 search office';
+
+  async searchEntreprises(
+    codeRome: string,
+    latitude: number,
+    longitude: number,
+    distance = 30,
+    pageSize = 10,
+  ) {
+    const token = await this.getToken(this.LBB_SCOPE);
+    const params = new URLSearchParams({
+      rome: codeRome,
+      latitude: String(latitude),
+      longitude: String(longitude),
+      distance: String(distance),
+      page_size: String(pageSize),
+      sort_by: 'hiring_potential',
+      sort_direction: 'desc',
+    });
+    const res = await fetch(`${this.LBB_BASE}/recherche?${params}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) {
+      this.logger.warn(`searchEntreprises failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  async getNombreEntreprises(
+    codeRome: string,
+    latitude: number,
+    longitude: number,
+    distance = 30,
+  ) {
+    const token = await this.getToken(this.LBB_SCOPE);
+    const params = new URLSearchParams({
+      rome: codeRome,
+      latitude: String(latitude),
+      longitude: String(longitude),
+      distance: String(distance),
+    });
+    const res = await fetch(`${this.LBB_BASE}/nombreEntreprise?${params}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) {
+      this.logger.warn(`getNombreEntreprises failed: ${res.status}`);
+      return null;
+    }
+    return res.json();
+  }
+
+  /**
+   * Build a complete premium rapport d'employabilité.
+   * Fetches all data sources in parallel for a given ROME + location.
+   */
+  async getRapportEmployabilite(
+    codeRome: string,
+    latitude?: number,
+    longitude?: number,
+    codeTypeTerritoire = 'NAT',
+    codeTerritoire = 'FR',
+  ) {
+    const [salaires, offres, perspectives, dynamique, entreprises] =
+      await Promise.all([
+        this.getSalaires(codeRome, codeTypeTerritoire, codeTerritoire),
+        this.getStatOffres(codeRome, codeTypeTerritoire, codeTerritoire),
+        this.getPerspectivesRecrutement(
+          codeRome,
+          codeTypeTerritoire,
+          codeTerritoire,
+        ),
+        this.getDynamiqueEmploi(codeTypeTerritoire, codeTerritoire),
+        latitude && longitude
+          ? this.searchEntreprises(codeRome, latitude, longitude)
+          : Promise.resolve(null),
+      ]);
+
+    // Extract key salary figures
+    const salaryData = this.extractSalaires(salaires);
+
+    // Extract latest quarter offers
+    const offresData = this.extractOffres(offres);
+
+    // Extract tension/perspective indicators
+    const tensionData = this.extractPerspectives(perspectives);
+
+    // Extract employment dynamics
+    const dynamiqueData = this.extractDynamique(dynamique);
+
+    // Extract top companies
+    const entreprisesData = this.extractEntreprises(entreprises);
+
+    return {
+      codeRome,
+      salaires: salaryData,
+      offres: offresData,
+      tension: tensionData,
+      dynamiqueEmploi: dynamiqueData,
+      entreprises: entreprisesData,
+    };
+  }
+
+  private extractSalaires(raw: any) {
+    if (!raw?.valeursParPeriode?.length) {
+      return { debutant: null, moyen: null, experimente: null, annee: null };
+    }
+    const latest = raw.valeursParPeriode[raw.valeursParPeriode.length - 1];
+    const vals = latest.salaireValeurMontant || [];
+    const byCode: Record<string, number> = {};
+    for (const v of vals) {
+      byCode[v.codeNomenclature] = v.valeurPrincipaleMontant;
+    }
+    return {
+      debutant: byCode['SAL1'] ?? null,
+      moyen: byCode['SAL3'] ?? null,
+      experimente: byCode['SAL2'] ?? null,
+      annee: latest.codePeriode ?? null,
+      libActivite: latest.libActivite ?? null,
+    };
+  }
+
+  private extractOffres(raw: any) {
+    if (!raw?.listeValeursParPeriode?.length) {
+      return { total: null, periode: null, contrats: [] };
+    }
+    // Get latest period
+    const sorted = [...raw.listeValeursParPeriode].sort((a: any, b: any) =>
+      (b.codePeriode || '').localeCompare(a.codePeriode || ''),
+    );
+    const latest = sorted[0];
+    const contrats = (latest.listeValeurParCaract || [])
+      .filter((c: any) => c.codeTypeCaract === 'TYPECTR')
+      .map((c: any) => ({
+        type: c.libCaract,
+        nombre: c.nombre,
+        pourcentage: c.pourcentage,
+      }));
+    return {
+      total: latest.valeurPrincipaleNombre ?? null,
+      periode: latest.libPeriode ?? null,
+      contrats,
+    };
+  }
+
+  private extractPerspectives(raw: any) {
+    if (!raw?.listeValeursParPeriode?.length) {
+      return { indicateurs: [], annee: null };
+    }
+    // Get the latest year only
+    const allPeriods = raw.listeValeursParPeriode as any[];
+    const latestYear = allPeriods.reduce(
+      (max: string, v: any) =>
+        (v.codePeriode || '') > max ? v.codePeriode : max,
+      '',
+    );
+    const latestOnly = allPeriods.filter(
+      (v: any) => v.codePeriode === latestYear,
+    );
+    const indicateurs = latestOnly.map((v: any) => ({
+      code: v.codeNomenclature,
+      libelle: v.libNomenclature,
+      valeur: v.valeurPrincipaleDecimale ?? null,
+      niveau: v.valeurPrincipaleNombre ?? null,
+    }));
+    return {
+      indicateurs,
+      annee: latestYear,
+    };
+  }
+
+  private extractDynamique(raw: any) {
+    if (!raw?.listeValeursParPeriode?.length) {
+      return { indicateur: null, periode: null };
+    }
+    const sorted = [...raw.listeValeursParPeriode].sort((a: any, b: any) =>
+      (b.codePeriode || '').localeCompare(a.codePeriode || ''),
+    );
+    const latest = sorted[0];
+    return {
+      indicateur: latest.valeurPrincipaleNombre ?? null,
+      libelle: latest.libNomenclature ?? null,
+      periode: latest.libPeriode ?? null,
+    };
+  }
+
+  private extractEntreprises(raw: any) {
+    if (!raw?.items?.length) {
+      return { total: 0, top: [] };
+    }
+    return {
+      total: raw.hits ?? 0,
+      top: raw.items.slice(0, 5).map((e: any) => ({
+        nom: e.company_name,
+        ville: e.city,
+        departement: e.department,
+        potentiel: Math.round(e.hiring_potential),
+        naf: e.naf_label,
+        taille: `${e.headcount_min}-${e.headcount_max}`,
+      })),
+    };
   }
 }
