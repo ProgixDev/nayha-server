@@ -33,4 +33,12 @@ export class AiController {
   getPlanAction(@CurrentUser() user: AuthUser) {
     return this.aiService.getPlanAction(user.id);
   }
+
+  @Post('evaluate')
+  evaluateAdequation(
+    @CurrentUser() user: AuthUser,
+    @Body('metierId') metierId: string,
+  ) {
+    return this.aiService.evaluateAdequation(user.id, metierId);
+  }
 }

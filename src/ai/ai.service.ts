@@ -28,6 +28,18 @@ export interface PlanActionResult {
   generatedAt: string;
 }
 
+export interface EvaluationResult {
+  sortie: 'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
+  messagePersonnalise: string;
+  pointsForts: { label: string }[];
+  renforcement?: {
+    element: string;
+    raison: string;
+    duree: string;
+  };
+  formationObligatoire: boolean;
+}
+
 const ROME_GRANDDOMAINE_CODES = new Set([
   'A',
   'B',
@@ -194,6 +206,182 @@ Transformer chaque expérience de vie — parentalité, bénévolat, aidance, ge
 
     if (error || !data) throw new NotFoundException('Profile not found');
     return data.plan_action_data;
+  }
+
+  // ─── Évaluation d'adéquation ────────────────────────────────
+
+  async evaluateAdequation(
+    userId: string,
+    metierId: string,
+  ): Promise<EvaluationResult> {
+    // 1. Fetch user profile (diagnostics + portrait)
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select(
+        'diagnostic_vie_data, diagnostic_pro_data, portrait_data',
+      )
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const { diagnostic_vie_data: vie, diagnostic_pro_data: pro } = profile;
+    if (!vie || !pro) {
+      throw new NotFoundException('Diagnostics not completed');
+    }
+
+    // 2. Fetch ROME métier + fiche data
+    const [metierResult, ficheResult] = await Promise.all([
+      this.supabase
+        .from('rome_metiers')
+        .select('data')
+        .eq('code', metierId)
+        .single(),
+      this.supabase
+        .from('rome_fiches_metiers')
+        .select('data')
+        .eq('code', metierId)
+        .single(),
+    ]);
+
+    if (metierResult.error || !metierResult.data) {
+      throw new NotFoundException(`Métier ${metierId} not found`);
+    }
+
+    const metier = metierResult.data.data;
+    const fiche = ficheResult.data?.data;
+
+    // 3. Build job requirements summary
+    const jobContext = this.buildJobContext(metier, fiche);
+    const diagnosticContext = this.buildDiagnosticContext(vie, pro);
+
+    // Include portrait if available
+    const portraitContext = profile.portrait_data
+      ? `\n=== PORTRAIT DE FORCE (généré par NAYHA) ===
+Signature : ${profile.portrait_data.signature}
+Savoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}
+Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      : '';
+
+    // 4. AI evaluation
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.5,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une conseillère en insertion professionnelle. Tu compares le profil réel d'une femme avec les exigences d'un métier ROME.
+
+# PRINCIPE ABSOLU
+NAYHA ne dit JAMAIS qu'elle ne peut pas postuler. Il y a TOUJOURS une possibilité. Tu choisis l'une des 3 sorties.
+
+# LES 3 SORTIES (choisis UNE seule)
+
+## SORTIE 1 : "candidaterMaintenant"
+Son profil correspond. Elle a les compétences clés, et l'accès au métier ne requiert pas de diplôme obligatoire qu'elle n'a pas.
+→ Liste ses points forts (3-5 éléments concrets tirés de son profil qui matchent les compétences du métier)
+→ Message personnalisé expliquant pourquoi elle est légitime
+
+## SORTIE 2 : "candidaterEtRenforcer"
+Elle a les bases mais un élément revient dans les offres qu'elle pourrait renforcer. Ce n'est PAS bloquant — elle peut candidater maintenant ET se former en parallèle.
+→ Liste ses points forts (3-4 éléments)
+→ UN renforcement suggéré (élément + raison + durée estimée)
+→ Message personnalisé
+
+## SORTIE 3 : "formationNecessaire"
+UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGATOIRE pour exercer (emploi réglementé, diplôme d'État, agrément obligatoire). Si c'est juste "recommandé" ou "souhaité", c'est sortie 1 ou 2, PAS sortie 3.
+→ formationObligatoire = true si c'est légalement obligatoire
+→ Message encourageant, pas décourageant
+→ Liste ce qui ne change pas (ses compétences restent valides)
+
+# RÈGLES
+- Tutoiement obligatoire
+- Chaque point fort DOIT être ancré dans un fait du profil ET correspondre à une compétence du métier
+- Le renforcement (sortie 2) doit être précis : quel outil/compétence, pourquoi, combien de temps
+- Ne mets JAMAIS sortie 3 pour un métier non réglementé
+- Vérifie le champ "accesEmploi" : s'il dit "obligatoire pour exercer" → sortie 3. Sinon → sortie 1 ou 2.
+
+# FORMAT JSON (strict)
+{
+  "sortie": "candidaterMaintenant" | "candidaterEtRenforcer" | "formationNecessaire",
+  "messagePersonnalise": "2-3 phrases personnalisées, tutoiement, ancrées dans son profil",
+  "pointsForts": [
+    { "label": "Compétence ancrée dans son vécu" }
+  ],
+  "renforcement": {
+    "element": "Nom de la compétence/outil à renforcer",
+    "raison": "Pourquoi — cet élément revient dans les offres",
+    "duree": "Durée estimée (ex: '2-3 semaines en autoformation')"
+  },
+  "formationObligatoire": false
+}
+
+Note : "renforcement" est null pour sortie 1 et sortie 3. "pointsForts" contient 3-5 éléments.`,
+        },
+        {
+          role: 'user',
+          content: `${diagnosticContext}${portraitContext}
+
+${jobContext}
+
+Compare ce profil avec les exigences du métier. Quelle sortie ?`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    const parsed = JSON.parse(content);
+
+    const result: EvaluationResult = {
+      sortie: parsed.sortie,
+      messagePersonnalise: parsed.messagePersonnalise || '',
+      pointsForts: (parsed.pointsForts || []).map((p: any) => ({
+        label: typeof p === 'string' ? p : p.label || '',
+      })),
+      formationObligatoire: parsed.formationObligatoire ?? false,
+    };
+
+    if (parsed.renforcement && parsed.sortie === 'candidaterEtRenforcer') {
+      result.renforcement = {
+        element: parsed.renforcement.element || '',
+        raison: parsed.renforcement.raison || '',
+        duree: parsed.renforcement.duree || '',
+      };
+    }
+
+    return result;
+  }
+
+  private buildJobContext(
+    metier: Record<string, any>,
+    fiche: Record<string, any> | null,
+  ): string {
+    const competences: string[] = [];
+    if (fiche?.groupesCompetencesMobilisees) {
+      for (const group of fiche.groupesCompetencesMobilisees) {
+        const enjeu = group.enjeu?.libelle || '';
+        for (const c of group.competences || []) {
+          competences.push(`${c.libelle} (${enjeu})`);
+        }
+      }
+    }
+
+    return `=== MÉTIER VISÉ ===
+Titre : ${metier.libelle}
+Code ROME : ${metier.code}
+Définition : ${metier.definition || 'N/A'}
+
+Accès au métier : ${metier.accesEmploi || 'N/A'}
+
+Compétences requises (${competences.length}) :
+${competences.slice(0, 30).map((c) => `- ${c}`).join('\n')}
+
+Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(', ') || 'N/A'}`;
   }
 
   private async scoreMetiersForGranddomaines(
