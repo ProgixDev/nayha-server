@@ -22,7 +22,24 @@ export class UsersService {
       .single();
 
     if (error || !data) {
-      throw new NotFoundException('Profile not found');
+      // Auto-create profile for new users
+      const { data: newProfile, error: insertError } = await this.supabase
+        .from('user_profiles')
+        .upsert({
+          id: userId,
+          rgpd_accepted: false,
+          diagnostic_vie_completed: false,
+          diagnostic_pro_completed: false,
+          reports_completed: false,
+        })
+        .select()
+        .single();
+
+      if (insertError || !newProfile) {
+        throw new NotFoundException('Could not create profile');
+      }
+
+      return newProfile;
     }
 
     return data;
