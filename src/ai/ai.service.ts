@@ -29,7 +29,8 @@ export interface PlanActionResult {
 }
 
 export interface EvaluationResult {
-  sortie: 'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
+  sortie:
+    'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
   messagePersonnalise: string;
   pointsForts: { label: string }[];
   renforcement?: {
@@ -38,6 +39,7 @@ export interface EvaluationResult {
     duree: string;
   };
   formationObligatoire: boolean;
+  elementsManquants?: string[];
 }
 
 const ROME_GRANDDOMAINE_CODES = new Set([
@@ -151,10 +153,10 @@ Transformer chaque expérience de vie — parentalité, bénévolat, aidance, ge
       .from('user_profiles')
       .select('portrait_data')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) throw new NotFoundException('Profile not found');
-    return data.portrait_data;
+    if (error || !data) return null;
+    return data.portrait_data ?? null;
   }
 
   // ─── Plan d'Action ───────────────────────────────────────────
@@ -202,10 +204,10 @@ Transformer chaque expérience de vie — parentalité, bénévolat, aidance, ge
       .from('user_profiles')
       .select('plan_action_data')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) throw new NotFoundException('Profile not found');
-    return data.plan_action_data;
+    if (error || !data) return null;
+    return data.plan_action_data ?? null;
   }
 
   // ─── Évaluation d'adéquation ────────────────────────────────
@@ -217,9 +219,7 @@ Transformer chaque expérience de vie — parentalité, bénévolat, aidance, ge
     // 1. Fetch user profile (diagnostics + portrait)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select(
-        'diagnostic_vie_data, diagnostic_pro_data, portrait_data',
-      )
+      .select('diagnostic_vie_data, diagnostic_pro_data, portrait_data')
       .eq('id', userId)
       .single();
 
@@ -288,6 +288,7 @@ Son profil correspond. Elle a les compétences clés, et l'accès au métier ne 
 ## SORTIE 2 : "candidaterEtRenforcer"
 Elle a les bases mais un élément revient dans les offres qu'elle pourrait renforcer. Ce n'est PAS bloquant — elle peut candidater maintenant ET se former en parallèle.
 → Liste ses points forts (3-4 éléments)
+→ Liste 1 à 3 éléments manquants ou à renforcer (formation optionnelle, outil, compétence particulière)
 → UN renforcement suggéré (élément + raison + durée estimée)
 → Message personnalisé
 
@@ -301,6 +302,7 @@ UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGAT
 - Tutoiement obligatoire
 - Chaque point fort DOIT être ancré dans un fait du profil ET correspondre à une compétence du métier
 - Le renforcement (sortie 2) doit être précis : quel outil/compétence, pourquoi, combien de temps
+- Si une formation est optionnelle ou si seules des compétences particulières manquent, choisis sortie 2 et remplis "elementsManquants". Ne choisis pas sortie 3.
 - Ne mets JAMAIS sortie 3 pour un métier non réglementé
 - Vérifie le champ "accesEmploi" : s'il dit "obligatoire pour exercer" → sortie 3. Sinon → sortie 1 ou 2.
 
@@ -316,10 +318,11 @@ UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGAT
     "raison": "Pourquoi — cet élément revient dans les offres",
     "duree": "Durée estimée (ex: '2-3 semaines en autoformation')"
   },
-  "formationObligatoire": false
+  "formationObligatoire": false,
+  "elementsManquants": ["Élément manquant ou à renforcer"]
 }
 
-Note : "renforcement" est null pour sortie 1 et sortie 3. "pointsForts" contient 3-5 éléments.`,
+Note : "renforcement" est null pour sortie 1 et sortie 3. "elementsManquants" est vide pour sortie 1 et contient 1 à 3 éléments pour sortie 2. "pointsForts" contient 3-5 éléments.`,
         },
         {
           role: 'user',
@@ -344,6 +347,11 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
         label: typeof p === 'string' ? p : p.label || '',
       })),
       formationObligatoire: parsed.formationObligatoire ?? false,
+      elementsManquants: Array.isArray(parsed.elementsManquants)
+        ? parsed.elementsManquants.filter(
+            (item: any) => typeof item === 'string' && item.trim(),
+          )
+        : [],
     };
 
     if (parsed.renforcement && parsed.sortie === 'candidaterEtRenforcer') {
@@ -379,7 +387,10 @@ Définition : ${metier.definition || 'N/A'}
 Accès au métier : ${metier.accesEmploi || 'N/A'}
 
 Compétences requises (${competences.length}) :
-${competences.slice(0, 30).map((c) => `- ${c}`).join('\n')}
+${competences
+  .slice(0, 30)
+  .map((c) => `- ${c}`)
+  .join('\n')}
 
 Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(', ') || 'N/A'}`;
   }
@@ -523,10 +534,7 @@ Choisis les 3 métiers les plus adaptés à son profil ET à ses aspirations. Ra
     if (!content) throw new Error('OpenAI returned empty response');
 
     const parsed = JSON.parse(content);
-    if (
-      !Array.isArray(parsed.metiers) ||
-      parsed.metiers.length === 0
-    ) {
+    if (!Array.isArray(parsed.metiers) || parsed.metiers.length === 0) {
       throw new Error('OpenAI returned no métiers');
     }
 
@@ -686,17 +694,103 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
   }
 
   private static readonly STOP_WORDS = new Set([
-    'le', 'la', 'les', 'de', 'du', 'des', 'un', 'une', 'et', 'en', 'dans',
-    'pour', 'par', 'sur', 'avec', 'est', 'sont', 'ses', 'son', 'qui', 'que',
-    'ce', 'cette', 'au', 'aux', 'ne', 'pas', 'plus', 'elle', 'je', 'tu',
-    'on', 'nous', 'vous', 'ils', 'se', 'sa', 'leur', 'même', 'aussi',
-    'très', 'bien', 'tout', 'tous', 'mais', 'car', 'donc', 'comme', 'dont',
-    'mon', 'mes', 'été', 'fait', 'être', 'avoir', 'faire', 'ces', 'ans',
-    'non', 'oui', 'peu', 'sans', 'sous', 'chez', 'lors', 'après', 'avant',
-    'entre', 'vers', 'quel', 'quoi', 'comment', 'peut', 'faut', 'voir',
-    'mise', 'jour', 'lieu', 'deux', 'trois', 'quatre', 'cinq', 'puis',
-    'toute', 'autre', 'autres', 'chaque', 'notre', 'votre', 'leurs',
-    'mois', 'site', 'projet', 'travail', 'métier', 'poste', 'niveau',
+    'le',
+    'la',
+    'les',
+    'de',
+    'du',
+    'des',
+    'un',
+    'une',
+    'et',
+    'en',
+    'dans',
+    'pour',
+    'par',
+    'sur',
+    'avec',
+    'est',
+    'sont',
+    'ses',
+    'son',
+    'qui',
+    'que',
+    'ce',
+    'cette',
+    'au',
+    'aux',
+    'ne',
+    'pas',
+    'plus',
+    'elle',
+    'je',
+    'tu',
+    'on',
+    'nous',
+    'vous',
+    'ils',
+    'se',
+    'sa',
+    'leur',
+    'même',
+    'aussi',
+    'très',
+    'bien',
+    'tout',
+    'tous',
+    'mais',
+    'car',
+    'donc',
+    'comme',
+    'dont',
+    'mon',
+    'mes',
+    'été',
+    'fait',
+    'être',
+    'avoir',
+    'faire',
+    'ces',
+    'ans',
+    'non',
+    'oui',
+    'peu',
+    'sans',
+    'sous',
+    'chez',
+    'lors',
+    'après',
+    'avant',
+    'entre',
+    'vers',
+    'quel',
+    'quoi',
+    'comment',
+    'peut',
+    'faut',
+    'voir',
+    'mise',
+    'jour',
+    'lieu',
+    'deux',
+    'trois',
+    'quatre',
+    'cinq',
+    'puis',
+    'toute',
+    'autre',
+    'autres',
+    'chaque',
+    'notre',
+    'votre',
+    'leurs',
+    'mois',
+    'site',
+    'projet',
+    'travail',
+    'métier',
+    'poste',
+    'niveau',
     'renseigné',
   ]);
 
@@ -724,9 +818,7 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
           .toLowerCase()
           .replace(/[^a-zàâäéèêëïîôùûüÿç\s'-]/g, ' ')
           .split(/\s+/)
-          .filter(
-            (w) => w.length > 3 && !AiService.STOP_WORDS.has(w),
-          ),
+          .filter((w) => w.length > 3 && !AiService.STOP_WORDS.has(w)),
       ),
     ];
   }
@@ -751,22 +843,46 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
       .toLowerCase();
 
     // Social (S) — helping, teaching, caring, accompagner
-    if (/enseign|form|accompagn|aide|soin|social|écoute|transmettre|coach|mentor|pédagog/i.test(text))
+    if (
+      /enseign|form|accompagn|aide|soin|social|écoute|transmettre|coach|mentor|pédagog/i.test(
+        text,
+      )
+    )
       codes.add('S');
     // Investigateur (I) — research, analyze, tech, data
-    if (/analys|recherch|développ|tech|données|code|programm|ingénier|scientif/i.test(text))
+    if (
+      /analys|recherch|développ|tech|données|code|programm|ingénier|scientif/i.test(
+        text,
+      )
+    )
       codes.add('I');
     // Artiste (A) — creative, design, write, art
-    if (/créat|design|écri|artist|cultur|communic|média|graphi|photo|vidéo/i.test(text))
+    if (
+      /créat|design|écri|artist|cultur|communic|média|graphi|photo|vidéo/i.test(
+        text,
+      )
+    )
       codes.add('A');
     // Entreprenant (E) — lead, manage, entrepreneurial
-    if (/diriger|manage|entrepren|leader|négoci|vend|commerce|pilot|stratég/i.test(text))
+    if (
+      /diriger|manage|entrepren|leader|négoci|vend|commerce|pilot|stratég/i.test(
+        text,
+      )
+    )
       codes.add('E');
     // Conventionnel (C) — organize, admin, structure
-    if (/organis|admin|gest|compta|budget|planifi|procédure|rigeur|structur/i.test(text))
+    if (
+      /organis|admin|gest|compta|budget|planifi|procédure|rigeur|structur/i.test(
+        text,
+      )
+    )
       codes.add('C');
     // Réaliste (R) — build, hands-on, physical
-    if (/construi|fabriqu|réparer|terrain|pratiqu|manuel|technique|logistiq/i.test(text))
+    if (
+      /construi|fabriqu|réparer|terrain|pratiqu|manuel|technique|logistiq/i.test(
+        text,
+      )
+    )
       codes.add('R');
 
     return [...codes];
