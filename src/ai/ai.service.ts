@@ -29,6 +29,7 @@ export interface PlanActionResult {
 }
 
 export interface EvaluationResult {
+  metierTitre: string;
   sortie:
     'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
   messagePersonnalise: string;
@@ -39,7 +40,15 @@ export interface EvaluationResult {
     duree: string;
   };
   formationObligatoire: boolean;
+  obligationDetail?: string;
   elementsManquants?: string[];
+  lacunes: {
+    element: string;
+    categorie: 'diplome' | 'competence' | 'qualite' | 'milieu' | 'acces';
+    niveau: 'a_developper' | 'a_verifier' | 'obligatoire';
+    pourquoi: string;
+    prochaineEtape: string;
+  }[];
 }
 
 const ROME_GRANDDOMAINE_CODES = new Set([
@@ -295,16 +304,26 @@ Elle a les bases mais un élément revient dans les offres qu'elle pourrait renf
 ## SORTIE 3 : "formationNecessaire"
 UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGATOIRE pour exercer (emploi réglementé, diplôme d'État, agrément obligatoire). Si c'est juste "recommandé" ou "souhaité", c'est sortie 1 ou 2, PAS sortie 3.
 → formationObligatoire = true si c'est légalement obligatoire
-→ Message encourageant, pas décourageant
+→ Message en 3-4 phrases : cite le titre exact du métier, le diplôme/titre/agrément exact, et au moins un élément concret de son parcours ou de sa vision. Message encourageant, pas décourageant.
 → Liste ce qui ne change pas (ses compétences restent valides)
 
 # RÈGLES
 - Tutoiement obligatoire
+- Cite le titre exact du métier dans "messagePersonnalise". Si une obligation existe, nomme le diplôme, titre ou autorisation exact(e) et explique le lien avec ce métier ; n'écris jamais seulement "un diplôme d'État".
+- Le message doit être impossible à réutiliser pour une autre personne : cite le métier ET au moins deux faits précis provenant du diagnostic ou du Portrait de Force (expérience, compétence, préférence, condition de travail ou objectif). Interdiction des formules génériques comme « ton profil correspond », « tu as les qualités nécessaires » ou « tu peux candidater » sans citer ces éléments.
+- Les points forts doivent nommer le fait du profil et le relier explicitement à une exigence du métier. N'utilise jamais « parcours cohérent », « motivation » ou « compétences transférables » seuls.
 - Chaque point fort DOIT être ancré dans un fait du profil ET correspondre à une compétence du métier
 - Le renforcement (sortie 2) doit être précis : quel outil/compétence, pourquoi, combien de temps
 - Si une formation est optionnelle ou si seules des compétences particulières manquent, choisis sortie 2 et remplis "elementsManquants". Ne choisis pas sortie 3.
 - Ne mets JAMAIS sortie 3 pour un métier non réglementé
 - Vérifie le champ "accesEmploi" : s'il dit "obligatoire pour exercer" → sortie 3. Sinon → sortie 1 ou 2.
+- Les lacunes sont les écarts entre les exigences ROME et ce qui est documenté dans le profil. Ne déduis jamais une absence à partir du silence : utilise "a_verifier" lorsque le diagnostic ne permet pas de conclure.
+- Une lacune doit être précise, non stigmatisante et actionnable. 0 à 6 lacunes maximum. Ne répète pas les points forts.
+- Vérifie séparément quatre dimensions : diplôme/condition d'accès, compétences techniques, qualités/savoir-être, et milieu/conditions de travail.
+- Si "Accès au métier" indique explicitement qu'un diplôme, titre, agrément ou autorisation est obligatoire pour exercer, crée une lacune de catégorie "diplome" ou "acces", avec le niveau "obligatoire", et choisis "formationNecessaire". Ne présente jamais un diplôme obligatoire comme une simple compétence à développer.
+- Les Formacodes seuls ne prouvent pas qu'un diplôme est obligatoire : seule une formulation explicite de l'accès au métier permet de le conclure.
+- Pour le milieu de travail, compare les éléments explicites du métier (public, rythme, déplacements, horaires, travail physique, relation d'aide, environnement) avec "Ce qu'elle refuse au travail", "Conditions idéales" et "Sa journée idéale". Signale une incompatibilité seulement si elle est étayée par les deux côtés ; sinon utilise "a_verifier".
+- Une lacune de milieu doit expliquer le compromis concret à vérifier, jamais juger la personne ni déclarer que le métier lui est interdit.
 
 # FORMAT JSON (strict)
 {
@@ -319,7 +338,16 @@ UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGAT
     "duree": "Durée estimée (ex: '2-3 semaines en autoformation')"
   },
   "formationObligatoire": false,
-  "elementsManquants": ["Élément manquant ou à renforcer"]
+  "elementsManquants": ["Élément manquant ou à renforcer"],
+  "lacunes": [
+    {
+      "element": "Nom court de la compétence ou exigence",
+      "categorie": "diplome" | "competence" | "qualite" | "milieu" | "acces",
+      "niveau": "a_developper" | "a_verifier" | "obligatoire",
+      "pourquoi": "Ce qui manque ou reste à confirmer, en lien avec une exigence du métier",
+      "prochaineEtape": "Une action concrète et réaliste pour progresser ou vérifier"
+    }
+  ]
 }
 
 Note : "renforcement" est null pour sortie 1 et sortie 3. "elementsManquants" est vide pour sortie 1 et contient 1 à 3 éléments pour sortie 2. "pointsForts" contient 3-5 éléments.`,
@@ -341,18 +369,57 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
     const parsed = JSON.parse(content);
 
     const result: EvaluationResult = {
+      metierTitre: metier.libelle || metierId,
       sortie: parsed.sortie,
       messagePersonnalise: parsed.messagePersonnalise || '',
       pointsForts: (parsed.pointsForts || []).map((p: any) => ({
         label: typeof p === 'string' ? p : p.label || '',
       })),
       formationObligatoire: parsed.formationObligatoire ?? false,
+      obligationDetail: undefined,
       elementsManquants: Array.isArray(parsed.elementsManquants)
         ? parsed.elementsManquants.filter(
             (item: any) => typeof item === 'string' && item.trim(),
           )
         : [],
+      lacunes: Array.isArray(parsed.lacunes)
+        ? parsed.lacunes
+            .filter((item: any) => item && typeof item.element === 'string')
+            .slice(0, 6)
+            .map((item: any) => ({
+              element: item.element.trim(),
+              categorie: [
+                'diplome',
+                'competence',
+                'qualite',
+                'milieu',
+                'acces',
+              ].includes(item.categorie)
+                ? item.categorie
+                : 'competence',
+              niveau: ['a_developper', 'a_verifier', 'obligatoire'].includes(
+                item.niveau,
+              )
+                ? item.niveau
+                : 'a_verifier',
+              pourquoi: typeof item.pourquoi === 'string' ? item.pourquoi : '',
+              prochaineEtape:
+                typeof item.prochaineEtape === 'string'
+                  ? item.prochaineEtape
+                  : '',
+            }))
+        : [],
     };
+
+    const obligation = result.lacunes.find(
+      (item) =>
+        item.niveau === 'obligatoire' &&
+        (item.categorie === 'diplome' || item.categorie === 'acces'),
+    );
+    if (obligation) {
+      result.obligationDetail = obligation.element;
+      result.formationObligatoire = true;
+    }
 
     if (parsed.renforcement && parsed.sortie === 'candidaterEtRenforcer') {
       result.renforcement = {
@@ -370,11 +437,24 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
     fiche: Record<string, any> | null,
   ): string {
     const competences: string[] = [];
+    const qualites: string[] = [];
+    const savoirs: string[] = [];
     if (fiche?.groupesCompetencesMobilisees) {
       for (const group of fiche.groupesCompetencesMobilisees) {
         const enjeu = group.enjeu?.libelle || '';
         for (const c of group.competences || []) {
-          competences.push(`${c.libelle} (${enjeu})`);
+          if (/savoir.?être|qualit|relationnel/i.test(enjeu)) {
+            qualites.push(c.libelle);
+          } else {
+            competences.push(`${c.libelle} (${enjeu})`);
+          }
+        }
+      }
+    }
+    if (fiche?.groupesSavoirs) {
+      for (const group of fiche.groupesSavoirs) {
+        for (const savoir of group.savoirs || []) {
+          if (savoir.libelle) savoirs.push(savoir.libelle);
         }
       }
     }
@@ -382,7 +462,7 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
     return `=== MÉTIER VISÉ ===
 Titre : ${metier.libelle}
 Code ROME : ${metier.code}
-Définition : ${metier.definition || 'N/A'}
+Définition et indices du milieu de travail : ${metier.definition || 'N/A'}
 
 Accès au métier : ${metier.accesEmploi || 'N/A'}
 
@@ -391,6 +471,18 @@ ${competences
   .slice(0, 30)
   .map((c) => `- ${c}`)
   .join('\n')}
+
+Qualités / savoir-être attendus (${qualites.length}) :
+${qualites
+  .slice(0, 20)
+  .map((q) => `- ${q}`)
+  .join('\n') || '- Non précisé dans la fiche'}
+
+Savoirs techniques attendus (${savoirs.length}) :
+${savoirs
+  .slice(0, 20)
+  .map((s) => `- ${s}`)
+  .join('\n') || '- Non précisé dans la fiche'}
 
 Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(', ') || 'N/A'}`;
   }

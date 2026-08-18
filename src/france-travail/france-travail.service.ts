@@ -57,6 +57,7 @@ export class FranceTravailService {
   private readonly logger = new Logger(FranceTravailService.name);
   private supabase: SupabaseClient;
   private tokenCache = new Map<string, TokenCache>();
+  private tokenRequests = new Map<string, Promise<string>>();
 
   private readonly clientId: string;
   private readonly clientSecret: string;
@@ -81,6 +82,22 @@ export class FranceTravailService {
       return cached.accessToken;
     }
 
+    const pendingRequest = this.tokenRequests.get(scope);
+    if (pendingRequest) {
+      return pendingRequest;
+    }
+
+    const request = this.requestToken(scope);
+    this.tokenRequests.set(scope, request);
+
+    try {
+      return await request;
+    } finally {
+      this.tokenRequests.delete(scope);
+    }
+  }
+
+  private async requestToken(scope: string): Promise<string> {
     const body = new URLSearchParams({
       grant_type: 'client_credentials',
       client_id: this.clientId,
@@ -88,14 +105,21 @@ export class FranceTravailService {
       scope,
     });
 
-    const res = await fetch(
-      'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=/partenaire',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      },
-    );
+    let res: Response;
+    try {
+      res = await fetch(
+        'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=/partenaire',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`France Travail auth request failed: ${message}`);
+      throw error;
+    }
 
     if (!res.ok) {
       const err = await res.text();
@@ -109,6 +133,19 @@ export class FranceTravailService {
     });
 
     return data.access_token;
+  }
+
+  private async getPremiumData<T>(
+    operation: string,
+    request: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await request();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`${operation} unavailable: ${message}`);
+      return null;
+    }
   }
 
   /**
@@ -426,19 +463,21 @@ export class FranceTravailService {
     codeTypeTerritoire = 'NAT',
     codeTerritoire = 'FR',
   ) {
-    const token = await this.getToken(this.IMT_SCOPE);
-    const url = `${this.IMT_BASE}/indicateur/salaire-rome-fap/${codeTypeTerritoire}/${codeTerritoire}?codeRome=${codeRome}`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-      },
+    return this.getPremiumData('getSalaires', async () => {
+      const token = await this.getToken(this.IMT_SCOPE);
+      const url = `${this.IMT_BASE}/indicateur/salaire-rome-fap/${codeTypeTerritoire}/${codeTerritoire}?codeRome=${codeRome}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) {
+        this.logger.warn(`getSalaires failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
     });
-    if (!res.ok) {
-      this.logger.warn(`getSalaires failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
   }
 
   async getStatOffres(
@@ -446,39 +485,9 @@ export class FranceTravailService {
     codeTypeTerritoire = 'NAT',
     codeTerritoire = 'FR',
   ) {
-    const token = await this.getToken(this.IMT_SCOPE);
-    const res = await fetch(`${this.IMT_BASE}/indicateur/stat-offres`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        codeTypeTerritoire,
-        codeTerritoire,
-        codeTypeActivite: 'ROME',
-        codeActivite: codeRome,
-        codeTypePeriode: 'TRIMESTRE',
-        codeTypeNomenclature: 'ORIGINEOFF',
-      }),
-    });
-    if (!res.ok) {
-      this.logger.warn(`getStatOffres failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
-  }
-
-  async getPerspectivesRecrutement(
-    codeRome: string,
-    codeTypeTerritoire = 'NAT',
-    codeTerritoire = 'FR',
-  ) {
-    const token = await this.getToken(this.IMT_SCOPE);
-    const res = await fetch(
-      `${this.IMT_BASE}/indicateur/stat-perspective-employeur`,
-      {
+    return this.getPremiumData('getStatOffres', async () => {
+      const token = await this.getToken(this.IMT_SCOPE);
+      const res = await fetch(`${this.IMT_BASE}/indicateur/stat-offres`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -490,46 +499,79 @@ export class FranceTravailService {
           codeTerritoire,
           codeTypeActivite: 'ROME',
           codeActivite: codeRome,
-          codeTypePeriode: 'ANNEE',
-          codeTypeNomenclature: 'TYPE_TENSION',
+          codeTypePeriode: 'TRIMESTRE',
+          codeTypeNomenclature: 'ORIGINEOFF',
         }),
-      },
-    );
-    if (!res.ok) {
-      this.logger.warn(`getPerspectivesRecrutement failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
+      });
+      if (!res.ok) {
+        this.logger.warn(`getStatOffres failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
+    });
   }
 
-  async getDynamiqueEmploi(
+  async getPerspectivesRecrutement(
+    codeRome: string,
     codeTypeTerritoire = 'NAT',
     codeTerritoire = 'FR',
   ) {
-    const token = await this.getToken(this.IMT_SCOPE);
-    const res = await fetch(
-      `${this.IMT_BASE}/indicateur/stat-dynamique-emploi`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
+    return this.getPremiumData('getPerspectivesRecrutement', async () => {
+      const token = await this.getToken(this.IMT_SCOPE);
+      const res = await fetch(
+        `${this.IMT_BASE}/indicateur/stat-perspective-employeur`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            codeTypeTerritoire,
+            codeTerritoire,
+            codeTypeActivite: 'ROME',
+            codeActivite: codeRome,
+            codeTypePeriode: 'ANNEE',
+            codeTypeNomenclature: 'TYPE_TENSION',
+          }),
         },
-        body: JSON.stringify({
-          codeTypeTerritoire,
-          codeTerritoire,
-          codeTypeActivite: 'MOYENNE',
-          codeActivite: 'MOYENNE',
-          codeTypePeriode: 'TRIMESTRE',
-        }),
-      },
-    );
-    if (!res.ok) {
-      this.logger.warn(`getDynamiqueEmploi failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
+      );
+      if (!res.ok) {
+        this.logger.warn(`getPerspectivesRecrutement failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
+    });
+  }
+
+  async getDynamiqueEmploi(codeTypeTerritoire = 'NAT', codeTerritoire = 'FR') {
+    return this.getPremiumData('getDynamiqueEmploi', async () => {
+      const token = await this.getToken(this.IMT_SCOPE);
+      const res = await fetch(
+        `${this.IMT_BASE}/indicateur/stat-dynamique-emploi`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            codeTypeTerritoire,
+            codeTerritoire,
+            codeTypeActivite: 'MOYENNE',
+            codeActivite: 'MOYENNE',
+            codeTypePeriode: 'TRIMESTRE',
+          }),
+        },
+      );
+      if (!res.ok) {
+        this.logger.warn(`getDynamiqueEmploi failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
+    });
   }
 
   // ──────────────────────────────────────────────
@@ -547,27 +589,29 @@ export class FranceTravailService {
     distance = 30,
     pageSize = 10,
   ) {
-    const token = await this.getToken(this.LBB_SCOPE);
-    const params = new URLSearchParams({
-      rome: codeRome,
-      latitude: String(latitude),
-      longitude: String(longitude),
-      distance: String(distance),
-      page_size: String(pageSize),
-      sort_by: 'hiring_potential',
-      sort_direction: 'desc',
+    return this.getPremiumData('searchEntreprises', async () => {
+      const token = await this.getToken(this.LBB_SCOPE);
+      const params = new URLSearchParams({
+        rome: codeRome,
+        latitude: String(latitude),
+        longitude: String(longitude),
+        distance: String(distance),
+        page_size: String(pageSize),
+        sort_by: 'hiring_potential',
+        sort_direction: 'desc',
+      });
+      const res = await fetch(`${this.LBB_BASE}/recherche?${params}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) {
+        this.logger.warn(`searchEntreprises failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
     });
-    const res = await fetch(`${this.LBB_BASE}/recherche?${params}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-      },
-    });
-    if (!res.ok) {
-      this.logger.warn(`searchEntreprises failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
   }
 
   async getNombreEntreprises(
@@ -576,24 +620,26 @@ export class FranceTravailService {
     longitude: number,
     distance = 30,
   ) {
-    const token = await this.getToken(this.LBB_SCOPE);
-    const params = new URLSearchParams({
-      rome: codeRome,
-      latitude: String(latitude),
-      longitude: String(longitude),
-      distance: String(distance),
+    return this.getPremiumData('getNombreEntreprises', async () => {
+      const token = await this.getToken(this.LBB_SCOPE);
+      const params = new URLSearchParams({
+        rome: codeRome,
+        latitude: String(latitude),
+        longitude: String(longitude),
+        distance: String(distance),
+      });
+      const res = await fetch(`${this.LBB_BASE}/nombreEntreprise?${params}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) {
+        this.logger.warn(`getNombreEntreprises failed: ${res.status}`);
+        return null;
+      }
+      return res.json();
     });
-    const res = await fetch(`${this.LBB_BASE}/nombreEntreprise?${params}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-      },
-    });
-    if (!res.ok) {
-      this.logger.warn(`getNombreEntreprises failed: ${res.status}`);
-      return null;
-    }
-    return res.json();
   }
 
   /**
