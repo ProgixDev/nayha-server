@@ -51,6 +51,48 @@ export interface EvaluationResult {
   }[];
 }
 
+export interface AnalyseOffresResult {
+  scoreGlobal: string;
+  motsCles: string[];
+  pointsForts: string[];
+  aTravailler: string[];
+}
+
+export interface LinkedinProfileResult {
+  nouveauTitre: string;
+  aPropos: string;
+  competences: string[];
+  experiences: {
+    title: string;
+    company: string;
+    period: string;
+    details: string;
+  }[];
+  experiencesReformulees: string[];
+  formations: string[];
+}
+
+export interface CvMetierResult {
+  profile: string;
+  experiences: {
+    title: string;
+    company: string;
+    period: string;
+    details: string;
+  }[];
+  skills: string[];
+  education: string;
+}
+
+export interface LettreMotivationResult {
+  accroche: string;
+  corps: string;
+  conclusion: string;
+  motsCles: string[];
+  entreprise: string;
+  poste: string;
+}
+
 const ROME_GRANDDOMAINE_CODES = new Set([
   'A',
   'B',
@@ -473,16 +515,20 @@ ${competences
   .join('\n')}
 
 Qualités / savoir-être attendus (${qualites.length}) :
-${qualites
-  .slice(0, 20)
-  .map((q) => `- ${q}`)
-  .join('\n') || '- Non précisé dans la fiche'}
+${
+  qualites
+    .slice(0, 20)
+    .map((q) => `- ${q}`)
+    .join('\n') || '- Non précisé dans la fiche'
+}
 
 Savoirs techniques attendus (${savoirs.length}) :
-${savoirs
-  .slice(0, 20)
-  .map((s) => `- ${s}`)
-  .join('\n') || '- Non précisé dans la fiche'}
+${
+  savoirs
+    .slice(0, 20)
+    .map((s) => `- ${s}`)
+    .join('\n') || '- Non précisé dans la fiche'
+}
 
 Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(', ') || 'N/A'}`;
   }
@@ -1019,5 +1065,383 @@ Sa journée idéale : "${pro.idealDayVision}"
 Ce qu'elle veut pour la suite : "${vie.vision}"
 
 Génère son Portrait de Force. Rappel : tutoie-la, ancre chaque compétence dans un fait ci-dessus, pas de généralités.`;
+  }
+
+  // ─── Analyse d'Offres ────────────────────────────────────────
+
+  async generateAnalyseOffres(
+    userId: string,
+    offers: string[],
+  ): Promise<AnalyseOffresResult> {
+    if (!offers || offers.length === 0) {
+      throw new BadRequestException('Veuillez fournir au moins une offre.');
+    }
+
+    // 1. Fetch user profile (diagnostics + portrait)
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('diagnostic_vie_data, diagnostic_pro_data, portrait_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const { diagnostic_vie_data: vie, diagnostic_pro_data: pro } = profile;
+    if (!vie || !pro) {
+      throw new NotFoundException('Diagnostics not completed');
+    }
+
+    const diagnosticContext = this.buildDiagnosticContext(vie, pro);
+    const portraitContext = profile.portrait_data
+      ? `\n=== PORTRAIT DE FORCE (généré par NAYHA) ===
+Signature : ${profile.portrait_data.signature}
+Savoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}
+Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      : '';
+
+    const offersContext = offers
+      .map((offer, index) => `\n=== OFFRE ${index + 1} ===\n${offer}`)
+      .join('\n');
+
+    // 2. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.6,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une experte en recrutement bienveillante. Tu dois analyser le profil d'une personne (ses expériences, ses envies, ses forces) par rapport à ${offers.length} offres d'emploi qu'elle a sélectionnées.
+
+TON OBJECTIF:
+Extraire ce que les recruteurs cherchent vraiment dans ces offres et montrer à la candidate où son profil correspond, et ce qu'elle doit préparer pour l'entretien.
+
+RÈGLES:
+- Tutoiement obligatoire.
+- Le ton doit être encourageant mais factuel.
+- "scoreGlobal" doit être une courte expression qualitative comme "Forte correspondance", "Correspondance moyenne", "Correspondance partielle". Pas de pourcentage.
+- "motsCles" doit contenir 5 à 7 termes métiers exacts ou mots-clés qui reviennent le plus dans les offres (ex: "Accompagnement", "Insertion", "Gestion de projet").
+- "pointsForts" doit contenir 3 à 4 phrases courtes montrant ce qu'elle a déjà dans son profil qui matche parfaitement avec les offres. (ex: "Ton expérience d'écoute correspond aux missions décrites").
+- "aTravailler" doit contenir 1 à 3 points d'attention : ce qui lui manque ou ce qu'elle devra défendre en entretien (outils, diplôme spécifique, etc.). (ex: "La connaissance des dispositifs d'insertion revient dans toutes les offres, renseigne-toi dessus avant l'entretien").
+
+FORMAT JSON:
+{
+  "scoreGlobal": "string",
+  "motsCles": ["string"],
+  "pointsForts": ["string"],
+  "aTravailler": ["string"]
+}
+`,
+        },
+        {
+          role: 'user',
+          content: `${diagnosticContext}${portraitContext}\n\nVoici les offres que la candidate a ciblées :\n${offersContext}\n\nGénère le rapport d'analyse en JSON.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        scoreGlobal: parsed.scoreGlobal || 'Analyse terminée',
+        motsCles: Array.isArray(parsed.motsCles) ? parsed.motsCles : [],
+        pointsForts: Array.isArray(parsed.pointsForts)
+          ? parsed.pointsForts
+          : [],
+        aTravailler: Array.isArray(parsed.aTravailler)
+          ? parsed.aTravailler
+          : [],
+      };
+    } catch (e) {
+      throw new Error('Failed to parse OpenAI response');
+    }
+  }
+  // ─── Profil LinkedIn ────────────────────────────────────────
+
+  async generateLinkedinProfile(
+    userId: string,
+    profileText: string,
+    enrichments: any,
+  ): Promise<LinkedinProfileResult> {
+    // 1. Fetch user profile (portrait)
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const portraitContext = profile.portrait_data
+      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      : '';
+
+    const enrichmentsContext = enrichments
+      ? `\n=== ÉLÉMENTS AJOUTÉS PAR L'UTILISATEUR ===\n${JSON.stringify(enrichments, null, 2)}`
+      : '';
+
+    // 2. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une experte en recrutement bienveillante. Tu dois optimiser le profil LinkedIn d'une femme en te basant sur son Portrait de Force, un texte libre de description de son profil, et d'éventuels éléments ajoutés (expériences, formations, compétences).
+
+TON OBJECTIF:
+Réécrire son profil LinkedIn en utilisant un vocabulaire recruteur, en mettant en valeur ses expériences (y compris de vie) comme de véritables compétences professionnelles.
+
+RÈGLES:
+- Tutoiement obligatoire.
+- "nouveauTitre" : Un titre LinkedIn accrocheur et professionnel, qui reflète sa vraie valeur (max 100 caractères).
+- "aPropos" : Une section "Infos" / "À propos" bienveillante, authentique et professionnelle (2-3 paragraphes), écrite à la première personne ("Je").
+- "competences" : 5 à 7 compétences clés (mots-clés forts) adaptées à son métier cible.
+- "experiences" : Liste structurée des expériences professionnelles identifiées (title, company, period, details résumant les réalisations).
+- "experiencesReformulees" : Prends les expériences (issues du texte libre ou des éléments ajoutés) et reformule-les en termes de résultats et de compétences pour LinkedIn. (2 à 4 expériences).
+- "formations" : Liste des formations ou diplômes pertinents (1 à 3 formations), formulés de manière valorisante (ex: "Titre de la formation · Organisme").
+
+FORMAT JSON (strict):
+{
+  "nouveauTitre": "string",
+  "aPropos": "string",
+  "competences": ["string"],
+  "experiences": [
+    {
+      "title": "string",
+      "company": "string",
+      "period": "string",
+      "details": "string"
+    }
+  ],
+  "experiencesReformulees": ["string"],
+  "formations": ["string"]
+}`,
+        },
+        {
+          role: 'user',
+          content: `${portraitContext}\n\n=== PROFIL DÉCRIT PAR LA CANDIDATE ===\n${profileText}${enrichmentsContext}\n\nGénère l'optimisation du profil LinkedIn en JSON.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        nouveauTitre: parsed.nouveauTitre || 'Profil en construction',
+        aPropos: parsed.aPropos || '',
+        competences: Array.isArray(parsed.competences)
+          ? parsed.competences
+          : [],
+        experiences: Array.isArray(parsed.experiences)
+          ? parsed.experiences.map((exp: any) => ({
+              title: exp.title || '',
+              company: exp.company || '',
+              period: exp.period || '2022 – présent',
+              details: exp.details || '',
+            }))
+          : [],
+        experiencesReformulees: Array.isArray(parsed.experiencesReformulees)
+          ? parsed.experiencesReformulees
+          : [],
+        formations: Array.isArray(parsed.formations) ? parsed.formations : [],
+      };
+    } catch (e) {
+      throw new Error('Failed to parse OpenAI response');
+    }
+  }
+
+  // ─── CV Métier ──────────────────────────────────────────────
+
+  async generateCv(
+    userId: string,
+    experiences: any[],
+    formations: any[],
+    competences: any[],
+    langues: any[],
+  ): Promise<CvMetierResult> {
+    // 1. Fetch user profile (portrait)
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const portraitContext = profile.portrait_data
+      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      : '';
+
+    const contextData = {
+      experiences: experiences || [],
+      formations: formations || [],
+      competences: competences || [],
+      langues: langues || [],
+    };
+
+    // 2. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une experte en recrutement et création de CV ATS bienveillante. Tu dois générer le contenu optimisé d'un CV métier standard, compatible filtres ATS et avec une structure linéaire propre.
+
+EXIGENCES:
+- Structure linéaire et claire, pensée pour les filtres ATS.
+- "profile" : Une accroche percutante et professionnelle (2-3 phrases) valorisant le parcours, les compétences clés et la motivation pour le métier cible.
+- "experiences" : Liste des expériences professionnelles reformulées en résultats tangibles et compétences clés. Conserve ou enrichis les entreprises, titres et périodes fournis.
+- "skills" : Liste de 6 à 8 compétences clés (mots-clés forts) issues du Portrait de Force et des compétences saisies.
+- "education" : Synthèse claire de la formation sous forme de texte linéaire multi-lignes.
+
+FORMAT JSON (strict):
+{
+  "profile": "string",
+  "experiences": [
+    {
+      "title": "string",
+      "company": "string",
+      "period": "string",
+      "details": "string"
+    }
+  ],
+  "skills": ["string"],
+  "education": "string"
+}`,
+        },
+        {
+          role: 'user',
+          content: `${portraitContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        profile: parsed.profile || '',
+        experiences: Array.isArray(parsed.experiences)
+          ? parsed.experiences.map((exp: any) => ({
+              title: exp.title || '',
+              company: exp.company || '',
+              period: exp.period || '',
+              details: exp.details || '',
+            }))
+          : [],
+        skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+        education: parsed.education || '',
+      };
+    } catch (e) {
+      throw new Error('Failed to parse OpenAI response');
+    }
+  }
+
+  // ─── Lettre de motivation ───────────────────────────────────
+
+  async generateLettreMotivation(
+    userId: string,
+    jobOffer?: string,
+    targetRole?: string,
+    company?: string,
+    isSpontaneous = false,
+  ): Promise<LettreMotivationResult> {
+    // 1. Fetch user profile (portrait)
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const portraitContext = profile.portrait_data
+      ? `\n=== PORTRAIT DE FORCE DE LA CANDIDATE ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      : '';
+
+    const offerContext =
+      jobOffer && jobOffer.trim().length > 0
+        ? `\n=== OFFRE D'EMPLOI VISÉE ===\n${jobOffer}`
+        : `\n=== CANDIDATURE SPONTANÉE ===\nMétier cible : ${targetRole || 'Poste visé'}\nEntreprise cible : ${company || 'Entreprise'}`;
+
+    // 2. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une experte en recrutement et réinsertion professionnelle bienveillante. Tu rédiges une lettre de motivation percutante, authentique et humaine pour une femme en transition professionnelle.
+
+PRINCIPES CLÉS:
+- La lettre doit valoriser son parcours, sa maturité professionnelle et ses compétences transférables issues de son Portrait de Force.
+- Si une compétence technique semble manquante par rapport à l'offre, intégrer naturellement une formulation d'engagement pour se former rapidement dès la prise de poste.
+- Ton professionnel, chaleureux, confiant et direct. Jamais de formules creuses ou génériques.
+- Découpage en 3 parties claires : "accroche" (pourquoi cette entreprise / ce poste), "corps" (ce qu'elle apporte, ses réussites, compétences clés), "conclusion" (disponibilité, proposition d'échange).
+- Extraire ou déduire le nom de l'entreprise ("entreprise") et l'intitulé du poste ("poste") si présents dans l'annonce.
+- Lister 3 à 5 mots-clés stratégiques de l'offre auxquels la lettre répond ("motsCles").
+
+FORMAT JSON (strict):
+{
+  "accroche": "string",
+  "corps": "string",
+  "conclusion": "string",
+  "motsCles": ["string"],
+  "entreprise": "string",
+  "poste": "string"
+}`,
+        },
+        {
+          role: 'user',
+          content: `${portraitContext}\n${offerContext}\n\nGénère la lettre de motivation optimisée en JSON.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        accroche: parsed.accroche || '',
+        corps: parsed.corps || '',
+        conclusion: parsed.conclusion || '',
+        motsCles: Array.isArray(parsed.motsCles) ? parsed.motsCles : [],
+        entreprise: parsed.entreprise || company || 'Entreprise',
+        poste: parsed.poste || targetRole || 'Poste visé',
+      };
+    } catch (e) {
+      throw new Error('Failed to parse OpenAI response');
+    }
   }
 }
