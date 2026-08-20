@@ -72,6 +72,9 @@ export class AiController {
     @Body('formations') formations: any[],
     @Body('competences') competences: any[],
     @Body('langues') langues: any[],
+    @Body('linkedinTitre') linkedinTitre?: string,
+    @Body('linkedinAPropos') linkedinAPropos?: string,
+    @Body('targetRole') targetRole?: string,
   ) {
     return this.aiService.generateCv(
       user.id,
@@ -79,6 +82,9 @@ export class AiController {
       formations,
       competences,
       langues,
+      linkedinTitre,
+      linkedinAPropos,
+      targetRole,
     );
   }
 
