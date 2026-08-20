@@ -55,11 +55,13 @@ export class AiController {
     @CurrentUser() user: AuthUser,
     @Body('profileText') profileText: string,
     @Body('enrichments') enrichments: any,
+    @Body('targetRole') targetRole?: string,
   ) {
     return this.aiService.generateLinkedinProfile(
       user.id,
       profileText,
       enrichments,
+      targetRole,
     );
   }
 
@@ -94,6 +96,32 @@ export class AiController {
       targetRole,
       company,
       isSpontaneous,
+    );
+  }
+
+  @Post('relance')
+  generateRelanceMessage(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+  ) {
+    return this.aiService.generateRelanceMessage(user.id, candidatureId);
+  }
+
+  @Post('bilan-mensuel')
+  generateBilanMensuel(@CurrentUser() user: AuthUser) {
+    return this.aiService.generateBilanMensuel(user.id);
+  }
+
+  @Post('entretien-debrief')
+  generateEntretienDebrief(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+    @Body('ressenti') ressenti: 'bien' | 'mitige' | 'difficile',
+  ) {
+    return this.aiService.generateEntretienDebrief(
+      user.id,
+      candidatureId,
+      ressenti,
     );
   }
 }
