@@ -54,6 +54,8 @@ export class UsersService {
       rgpd_accepted?: boolean;
       metier_selected?: boolean;
       has_paid?: boolean;
+      selected_metier_id?: string;
+      selected_metier_titre?: string;
     },
   ) {
     const { data, error } = await this.supabase
