@@ -75,6 +75,7 @@ export class AiController {
     @Body('linkedinTitre') linkedinTitre?: string,
     @Body('linkedinAPropos') linkedinAPropos?: string,
     @Body('targetRole') targetRole?: string,
+    @Body('jobOffer') jobOffer?: string,
   ) {
     return this.aiService.generateCv(
       user.id,
@@ -85,6 +86,7 @@ export class AiController {
       linkedinTitre,
       linkedinAPropos,
       targetRole,
+      jobOffer,
     );
   }
 
@@ -128,6 +130,43 @@ export class AiController {
       user.id,
       candidatureId,
       ressenti,
+    );
+  }
+
+  @Post('simulation-entretien')
+  generateSimulationQuestions(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+  ) {
+    return this.aiService.generateSimulationQuestions(user.id, candidatureId);
+  }
+
+  @Post('simulation-feedback')
+  generateSimulationFeedback(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+    @Body('questionText') questionText: string,
+    @Body('answer') answer: string,
+  ) {
+    return this.aiService.generateSimulationFeedback(
+      user.id,
+      candidatureId,
+      questionText,
+      answer,
+    );
+  }
+
+  @Post('simulation-score')
+  generateSimulationScore(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+    @Body('questionsAndAnswers')
+    questionsAndAnswers: { question: string; answer: string }[],
+  ) {
+    return this.aiService.generateSimulationScore(
+      user.id,
+      candidatureId,
+      questionsAndAnswers,
     );
   }
 }

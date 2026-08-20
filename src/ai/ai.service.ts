@@ -1459,6 +1459,7 @@ FORMAT JSON (strict):
     linkedinTitre?: string,
     linkedinAPropos?: string,
     targetRole?: string,
+    jobOffer?: string,
   ): Promise<CvMetierResult> {
     // 1. Fetch user profile (portrait + name)
     const { data: profile, error: profileError } = await this.supabase
@@ -1493,6 +1494,10 @@ FORMAT JSON (strict):
 
     const targetRoleContext = targetRole
       ? `\n=== MÉTIER CIBLE ===\n${targetRole}\nAngle le CV vers ce métier : accroche, compétences, reformulations d'expériences.`
+      : '';
+
+    const jobOfferContext = jobOffer
+      ? `\n=== OFFRE D'EMPLOI CIBLÉE ===\n${jobOffer}\nADAPTE le CV spécifiquement pour cette offre :\n- Reprends les mots-clés exacts de l'annonce dans les compétences et expériences.\n- Reformule les expériences pour mettre en avant les missions pertinentes à cette offre.\n- Place les compétences demandées par l'offre en premier.\n- L'accroche doit répondre directement au besoin décrit dans l'offre.`
       : '';
 
     // 2. Call OpenAI
@@ -1558,7 +1563,7 @@ FORMAT JSON (strict):
         },
         {
           role: 'user',
-          content: `${portraitContext}${linkedinContext}${targetRoleContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
+          content: `${portraitContext}${linkedinContext}${targetRoleContext}${jobOfferContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
         },
       ],
     });
@@ -2013,5 +2018,187 @@ Génère le debrief.`,
       pointsCles: Array.isArray(parsed.pointsCles) ? parsed.pointsCles : [],
       pourLaProchaineFois: parsed.pourLaProchaineFois || '',
     };
+  }
+
+  // ── Simulation d'entretien ────────────────────────────────────────────────
+
+  async generateSimulationQuestions(userId: string, candidatureId: string) {
+    // 1. Fetch candidature
+    const { data: candidature, error: candidatureError } = await this.supabase
+      .from('candidatures')
+      .select('entreprise, poste, offre_text')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (candidatureError || !candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    // 2. Fetch user profile for context
+    const { data: profile } = await this.supabase
+      .from('user_profiles')
+      .select('diagnostic_vie_data, diagnostic_pro_data, portrait_data')
+      .eq('id', userId)
+      .single();
+
+    const portraitContext =
+      profile?.portrait_data?.portrait
+        ? `\nSon portrait de force : ${profile.portrait_data.portrait}`
+        : '';
+
+    const offerContext = candidature.offre_text
+      ? `\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
+      : '';
+
+    // 3. Generate questions
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es un recruteur expérimenté qui fait passer un entretien pour le poste de ${candidature.poste} chez ${candidature.entreprise}.
+
+Génère exactement 6 questions d'entretien réalistes et progressives, dans l'ordre d'un vrai entretien :
+1. Présentation / parcours
+2. Motivation pour ce poste
+3. Compétence technique ou mise en situation
+4. Question DIFFICILE : la pause professionnelle ou un trou dans le parcours
+5. Question DIFFICILE : les prétentions salariales
+6. Question DIFFICILE : un échec ou une difficulté
+
+Les questions doivent être SPÉCIFIQUES à l'offre et au poste — pas génériques.
+${portraitContext}
+${offerContext}
+
+Retourne en JSON : { "questions": [{ "text": "string", "hard": boolean }] }`,
+        },
+        {
+          role: 'user',
+          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}\n\nGénère les 6 questions.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    const parsed = JSON.parse(content);
+    return {
+      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
+    };
+  }
+
+  async generateSimulationFeedback(
+    userId: string,
+    candidatureId: string,
+    questionText: string,
+    answer: string,
+  ) {
+    // 1. Fetch candidature for context
+    const { data: candidature } = await this.supabase
+      .from('candidatures')
+      .select('entreprise, poste, offre_text')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (!candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    const offerContext = candidature.offre_text
+      ? `\nOffre : ${candidature.offre_text.substring(0, 500)}`
+      : '';
+
+    // 2. Generate feedback
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es un coach en entretien d'embauche. Elle passe un entretien pour ${candidature.poste} chez ${candidature.entreprise}.
+
+Évalue sa réponse à la question du recruteur. Sois bienveillante, concrète, et constructive. Tutoiement obligatoire.
+
+Pour chaque réponse, donne :
+- fort : ce qui était bien dans sa réponse (1-2 phrases)
+- ameliorer : ce qui peut être amélioré (1-2 phrases)
+- reformulation : une version mieux formulée de sa réponse (2-3 phrases, en gardant SES idées mais mieux structurées)
+
+Retourne en JSON : { "fort": "string", "ameliorer": "string", "reformulation": "string" }`,
+        },
+        {
+          role: 'user',
+          content: `Question du recruteur : « ${questionText} »\n\nSa réponse : « ${answer} »${offerContext}\n\nÉvalue sa réponse.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    return JSON.parse(content);
+  }
+
+  async generateSimulationScore(
+    userId: string,
+    candidatureId: string,
+    questionsAndAnswers: { question: string; answer: string }[],
+  ) {
+    // 1. Fetch candidature
+    const { data: candidature } = await this.supabase
+      .from('candidatures')
+      .select('entreprise, poste')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (!candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    // 2. Format Q&A
+    const qaText = questionsAndAnswers
+      .map(
+        (qa, i) =>
+          `Q${i + 1}: ${qa.question}\nR${i + 1}: ${qa.answer}`,
+      )
+      .join('\n\n');
+
+    // 3. Generate score
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es un coach en entretien. Elle vient de terminer une simulation pour ${candidature.poste} chez ${candidature.entreprise}.
+
+Évalue l'ensemble de ses réponses. Donne :
+- Un score sur 10 (sois juste mais encourageante)
+- Les 3 points principaux à travailler avant le vrai entretien
+- Un message d'encouragement personnalisé
+
+Tutoiement obligatoire.
+
+Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", "string"], "message": "string" }`,
+        },
+        {
+          role: 'user',
+          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}\n\n${qaText}\n\nÉvalue l'ensemble.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    return JSON.parse(content);
   }
 }
