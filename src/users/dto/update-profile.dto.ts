@@ -15,5 +15,9 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsBoolean()
-  reports_completed?: boolean;
+  metier_selected?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  has_paid?: boolean;
 }

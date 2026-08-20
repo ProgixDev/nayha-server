@@ -30,7 +30,8 @@ export class UsersService {
           rgpd_accepted: false,
           diagnostic_vie_completed: false,
           diagnostic_pro_completed: false,
-          reports_completed: false,
+          metier_selected: false,
+          has_paid: false,
         })
         .select()
         .single();
@@ -51,6 +52,8 @@ export class UsersService {
       diagnostic_vie_completed?: boolean;
       diagnostic_pro_completed?: boolean;
       rgpd_accepted?: boolean;
+      metier_selected?: boolean;
+      has_paid?: boolean;
     },
   ) {
     const { data, error } = await this.supabase
