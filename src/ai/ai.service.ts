@@ -94,6 +94,7 @@ export interface LinkedinProfileResult {
 }
 
 export interface CvMetierResult {
+  userName: string;
   profile: string;
   experiences: {
     title: string;
@@ -1455,17 +1456,22 @@ FORMAT JSON (strict):
     formations: any[],
     competences: any[],
     langues: any[],
+    linkedinTitre?: string,
+    linkedinAPropos?: string,
+    targetRole?: string,
   ): Promise<CvMetierResult> {
-    // 1. Fetch user profile (portrait)
+    // 1. Fetch user profile (portrait + name)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select('portrait_data')
+      .select('portrait_data, diagnostic_vie_data')
       .eq('id', userId)
       .single();
 
     if (profileError || !profile) {
       throw new NotFoundException('Profile not found');
     }
+
+    const userName: string = profile.diagnostic_vie_data?.name || '';
 
     const portraitContext = profile.portrait_data
       ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}`
@@ -1478,6 +1484,17 @@ FORMAT JSON (strict):
       langues: langues || [],
     };
 
+    let linkedinContext = '';
+    if (linkedinTitre || linkedinAPropos) {
+      linkedinContext = '\n=== PROFIL LINKEDIN OPTIMISÉ (pour cohérence) ===';
+      if (linkedinTitre) linkedinContext += `\nTitre : ${linkedinTitre}`;
+      if (linkedinAPropos) linkedinContext += `\nÀ propos : ${linkedinAPropos}`;
+    }
+
+    const targetRoleContext = targetRole
+      ? `\n=== MÉTIER CIBLE ===\n${targetRole}\nAngle le CV vers ce métier : accroche, compétences, reformulations d'expériences.`
+      : '';
+
     // 2. Call OpenAI
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o',
@@ -1486,33 +1503,62 @@ FORMAT JSON (strict):
       messages: [
         {
           role: 'system',
-          content: `Tu es NAYHA, une experte en recrutement et création de CV ATS bienveillante. Tu dois générer le contenu optimisé d'un CV métier standard, compatible filtres ATS et avec une structure linéaire propre.
+          content: `Tu es NAYHA, experte en recrutement et création de CV ATS. Génère un CV optimisé, compatible filtres ATS, structure linéaire propre.
 
-EXIGENCES:
-- Structure linéaire et claire, pensée pour les filtres ATS.
-- "profile" : Une accroche percutante et professionnelle (2-3 phrases) valorisant le parcours, les compétences clés et la motivation pour le métier cible.
-- "experiences" : Liste des expériences professionnelles reformulées en résultats tangibles et compétences clés. Conserve ou enrichis les entreprises, titres et périodes fournis.
-- "skills" : Liste de 6 à 8 compétences clés (mots-clés forts) issues du Portrait de Force et des compétences saisies.
-- "education" : Synthèse claire de la formation sous forme de texte linéaire multi-lignes.
+# LANGUE
+Détecte la langue des données saisies (profil, expériences). Rédige TOUT le CV dans cette langue. Si les données sont en anglais, écris en anglais. Si en français, écris en français.
+
+# HIÉRARCHIE DES SOURCES
+1. **DONNÉES SAISIES** (expériences, formations, compétences, langues) = SOURCE DE VÉRITÉ pour tous les faits.
+2. **PROFIL LINKEDIN OPTIMISÉ** (si fourni) = SOURCE DE COHÉRENCE pour le positionnement et l'angle. Maintiens les mêmes mots-clés et le même cadrage.
+3. **PORTRAIT DE FORCE** (si fourni) = SOURCE DE TONALITÉ uniquement. Utilise pour le cadrage et la valorisation, JAMAIS pour introduire un fait absent des données saisies.
+
+# ANTI-HALLUCINATION
+- NE JAMAIS inventer : un projet, un résultat chiffré, un outil non mentionné, une responsabilité, un contexte.
+- REFORMULER ≠ HALLUCINER. Exemples légitimes :
+  - "Created digital content" → "Designed and produced digital content strategies for web and social media"
+  - "Used Figma daily" → "Leveraged Figma for UI design, prototyping, and cross-team collaboration"
+  CE QUI RESTE INTERDIT : inventer un livrable, un KPI, un outil non mentionné.
+
+# MÉTIER CIBLE
+Si un métier cible est fourni, angle TOUT le CV vers ce métier :
+- L'accroche positionne la candidate pour ce métier spécifiquement.
+- Les expériences sont reformulées pour mettre en avant les aspects pertinents au métier cible.
+- Les compétences les plus pertinentes au métier cible apparaissent en premier.
+- Le titre de chaque expérience peut être ajusté pour refléter l'angle cible (sans changer le poste réel).
+
+# SECTIONS DU CV
+
+## "profile" (accroche)
+- 2-3 phrases percutantes. Commence par le métier cible (ou le métier principal si pas de cible).
+- Valorise le parcours + compétences clés + motivation.
+- Si un titre/à propos LinkedIn est fourni, maintiens la cohérence de positionnement.
+- PAS de nom, PAS de "je suis passionné(e)".
+
+## "experiences"
+- Liste structurée de TOUTES les expériences fournies.
+- Conserve : entreprise, titre, période EXACTS.
+- "details" : 2-4 phrases par expérience. Reformule en livrables concrets et impact. Angle vers le métier cible.
+
+## "skills"
+- CONSERVE TOUTES les compétences fournies par la candidate. C'est critique pour les filtres ATS.
+- Trie par pertinence pour le métier cible (les plus pertinentes en premier).
+- Minimum 10 compétences, maximum 20. Les outils spécifiques (Adobe Photoshop, Figma, etc.) doivent apparaître individuellement, pas regroupés sous "Adobe Creative Suite" seul.
+
+## "education"
+- Texte linéaire multi-lignes. Format : "Diplôme — Établissement (années)". Une ligne par formation.
 
 FORMAT JSON (strict):
 {
   "profile": "string",
-  "experiences": [
-    {
-      "title": "string",
-      "company": "string",
-      "period": "string",
-      "details": "string"
-    }
-  ],
+  "experiences": [{"title": "string", "company": "string", "period": "string", "details": "string"}],
   "skills": ["string"],
   "education": "string"
 }`,
         },
         {
           role: 'user',
-          content: `${portraitContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
+          content: `${portraitContext}${linkedinContext}${targetRoleContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
         },
       ],
     });
@@ -1525,6 +1571,7 @@ FORMAT JSON (strict):
     try {
       const parsed = JSON.parse(content);
       return {
+        userName,
         profile: parsed.profile || '',
         experiences: Array.isArray(parsed.experiences)
           ? parsed.experiences.map((exp: any) => ({
