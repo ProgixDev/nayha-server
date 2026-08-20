@@ -1,0 +1,282 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { CreateCandidatureDto } from './dto/create-candidature.dto';
+import { UpdateCandidatureDto } from './dto/update-candidature.dto';
+
+export interface CandidatureStats {
+  totalEnvoyees: number;
+  totalEntretiens: number;
+  totalSansReponse: number;
+  tauxReponse: number;
+}
+
+export interface Alerte {
+  type: string;
+  message: string;
+  candidature_id?: string;
+}
+
+@Injectable()
+export class CandidaturesService {
+  private supabase: SupabaseClient;
+
+  constructor(private configService: ConfigService) {
+    this.supabase = createClient(
+      this.configService.get<string>('SUPABASE_URL')!,
+      this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
+      { auth: { persistSession: false } },
+    );
+  }
+
+  async list(userId: string) {
+    const { data, error } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .eq('user_id', userId)
+      .order('date_envoi', { ascending: false });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return data;
+  }
+
+  async create(userId: string, dto: CreateCandidatureDto) {
+    const { data, error } = await this.supabase
+      .from('candidatures')
+      .insert({
+        user_id: userId,
+        entreprise: dto.entreprise,
+        poste: dto.poste,
+        offre_text: dto.offre_text ?? null,
+        delai_reponse_annonce: dto.delai_reponse_annonce ?? null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return data;
+  }
+
+  async update(userId: string, id: string, dto: UpdateCandidatureDto) {
+    const updates: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (dto.statut !== undefined) {
+      updates.statut = dto.statut;
+      // When status changes to 'entretien', reset relance_proposee
+      if (dto.statut === 'entretien') {
+        updates.relance_proposee = false;
+      }
+    }
+    if (dto.date_entretien !== undefined) {
+      updates.date_entretien = dto.date_entretien;
+    }
+    if (dto.ressenti_entretien !== undefined) {
+      updates.ressenti_entretien = dto.ressenti_entretien;
+    }
+    if (dto.issue_entretien !== undefined) {
+      updates.issue_entretien = dto.issue_entretien;
+    }
+    if (dto.notes !== undefined) {
+      updates.notes = dto.notes;
+    }
+
+    const { data, error } = await this.supabase
+      .from('candidatures')
+      .update(updates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    return data;
+  }
+
+  async delete(userId: string, id: string) {
+    const { error } = await this.supabase
+      .from('candidatures')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    return { deleted: true };
+  }
+
+  async getStats(userId: string): Promise<CandidatureStats> {
+    const { data, error } = await this.supabase
+      .from('candidatures')
+      .select('statut')
+      .eq('user_id', userId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const all = data || [];
+    const totalEnvoyees = all.length;
+    const totalEntretiens = all.filter((c) => c.statut === 'entretien').length;
+    const totalReponses = all.filter(
+      (c) =>
+        c.statut === 'entretien' ||
+        c.statut === 'refusee' ||
+        c.statut === 'acceptee',
+    ).length;
+    const totalSansReponse = all.filter(
+      (c) => c.statut === 'envoyee' || c.statut === 'en_attente',
+    ).length;
+    const tauxReponse =
+      totalEnvoyees > 0
+        ? Math.round((totalReponses / totalEnvoyees) * 100)
+        : 0;
+
+    return {
+      totalEnvoyees,
+      totalEntretiens,
+      totalSansReponse,
+      tauxReponse,
+    };
+  }
+
+  async getTriggers(userId: string): Promise<{ alertes: Alerte[] }> {
+    const alertes: Alerte[] = [];
+    const now = new Date();
+
+    // Fetch all candidatures for the user
+    const { data: candidatures, error } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const all = candidatures || [];
+
+    // 1. relance7jours: candidatures envoyees > 7 days (or delai_reponse_annonce), not yet relance_proposee
+    for (const c of all) {
+      if (c.statut === 'envoyee' && !c.relance_proposee) {
+        const dateEnvoi = new Date(c.date_envoi);
+        const delaiJours = c.delai_reponse_annonce || 7;
+        const diffDays = Math.floor(
+          (now.getTime() - dateEnvoi.getTime()) / (1000 * 60 * 60 * 24),
+        );
+
+        if (diffDays >= delaiJours) {
+          alertes.push({
+            type: 'relance7jours',
+            message: `Ta candidature chez ${c.entreprise} (${c.poste}) date de ${diffDays} jours. C'est le bon moment pour relancer.`,
+            candidature_id: c.id,
+          });
+        }
+      }
+    }
+
+    // 2. inactivite14jours: no candidature updated in last 14 days
+    if (all.length > 0) {
+      const fourteenDaysAgo = new Date(
+        now.getTime() - 14 * 24 * 60 * 60 * 1000,
+      );
+      const hasRecentActivity = all.some(
+        (c) => new Date(c.updated_at) >= fourteenDaysAgo,
+      );
+
+      if (!hasRecentActivity) {
+        alertes.push({
+          type: 'inactivite14jours',
+          message:
+            "Cela fait plus de 14 jours sans activit\u00e9 sur tes candidatures. On s'y remet ?",
+        });
+      }
+    }
+
+    // 3. troisRefus: 3 or more recent refusals
+    const refusees = all.filter((c) => c.statut === 'refusee');
+    if (refusees.length >= 3) {
+      alertes.push({
+        type: 'troisRefus',
+        message: `Tu as re\u00e7u ${refusees.length} refus r\u00e9cemment. On peut analyser ta strat\u00e9gie ensemble et ajuster ton approche.`,
+      });
+    }
+
+    // 4. pasEntretien30jours: has candidatures in last 30 days but none with statut='entretien'
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const recentCandidatures = all.filter(
+      (c) => new Date(c.date_envoi) >= thirtyDaysAgo,
+    );
+
+    if (recentCandidatures.length > 0) {
+      const hasEntretien = recentCandidatures.some(
+        (c) => c.statut === 'entretien',
+      );
+
+      if (!hasEntretien) {
+        alertes.push({
+          type: 'pasEntretien30jours',
+          message:
+            "Tu as envoy\u00e9 des candidatures ce mois-ci mais aucune n'a encore d\u00e9bouch\u00e9 sur un entretien. On peut travailler tes candidatures ensemble.",
+        });
+      }
+    }
+
+    return { alertes };
+  }
+
+  async getRelanceMessages(userId: string, candidatureId: string) {
+    const { data, error } = await this.supabase
+      .from('relance_messages')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('candidature_id', candidatureId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return data;
+  }
+
+  async saveBilan(
+    userId: string,
+    data: {
+      mois: string;
+      total_envoyees: number;
+      total_entretiens: number;
+      total_reponses: number;
+      taux_reponse: number;
+      analyse: string;
+      strategie: string;
+    },
+  ) {
+    const { data: bilan, error } = await this.supabase
+      .from('bilans_mensuels')
+      .insert({
+        user_id: userId,
+        ...data,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return bilan;
+  }
+}
