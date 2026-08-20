@@ -135,17 +135,48 @@ export class FranceTravailService {
     return data.access_token;
   }
 
+  private premiumCache = new Map<
+    string,
+    { data: any; expiresAt: number }
+  >();
+
   private async getPremiumData<T>(
     operation: string,
     request: () => Promise<T>,
+    cacheKey?: string,
   ): Promise<T | null> {
-    try {
-      return await request();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`${operation} unavailable: ${message}`);
-      return null;
+    // Check cache first (5 min TTL)
+    const key = cacheKey || operation;
+    const cached = this.premiumCache.get(key);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data as T;
     }
+
+    // Try with one retry on failure
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await request();
+        if (result !== null && result !== undefined) {
+          this.premiumCache.set(key, {
+            data: result,
+            expiresAt: Date.now() + 5 * 60 * 1000, // 5 min cache
+          });
+        }
+        return result;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        if (attempt === 0) {
+          this.logger.warn(
+            `${operation} failed (attempt 1), retrying: ${message}`,
+          );
+          await new Promise((r) => setTimeout(r, 500));
+        } else {
+          this.logger.warn(`${operation} unavailable after retry: ${message}`);
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -473,11 +504,10 @@ export class FranceTravailService {
         },
       });
       if (!res.ok) {
-        this.logger.warn(`getSalaires failed: ${res.status}`);
-        return null;
+        throw new Error(`getSalaires HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `salaires:${codeRome}:${codeTypeTerritoire}:${codeTerritoire}`);
   }
 
   async getStatOffres(
@@ -504,11 +534,10 @@ export class FranceTravailService {
         }),
       });
       if (!res.ok) {
-        this.logger.warn(`getStatOffres failed: ${res.status}`);
-        return null;
+        throw new Error(`getStatOffres HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `offres:${codeRome}:${codeTypeTerritoire}:${codeTerritoire}`);
   }
 
   async getPerspectivesRecrutement(
@@ -538,11 +567,10 @@ export class FranceTravailService {
         },
       );
       if (!res.ok) {
-        this.logger.warn(`getPerspectivesRecrutement failed: ${res.status}`);
-        return null;
+        throw new Error(`getPerspectivesRecrutement HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `perspectives:${codeRome}:${codeTypeTerritoire}:${codeTerritoire}`);
   }
 
   async getDynamiqueEmploi(codeTypeTerritoire = 'NAT', codeTerritoire = 'FR') {
@@ -567,11 +595,10 @@ export class FranceTravailService {
         },
       );
       if (!res.ok) {
-        this.logger.warn(`getDynamiqueEmploi failed: ${res.status}`);
-        return null;
+        throw new Error(`getDynamiqueEmploi HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `dynamique:${codeTypeTerritoire}:${codeTerritoire}`);
   }
 
   // ──────────────────────────────────────────────
@@ -607,11 +634,10 @@ export class FranceTravailService {
         },
       });
       if (!res.ok) {
-        this.logger.warn(`searchEntreprises failed: ${res.status}`);
-        return null;
+        throw new Error(`searchEntreprises HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `entreprises:${codeRome}:${latitude}:${longitude}:${distance}`);
   }
 
   async getNombreEntreprises(
@@ -635,11 +661,10 @@ export class FranceTravailService {
         },
       });
       if (!res.ok) {
-        this.logger.warn(`getNombreEntreprises failed: ${res.status}`);
-        return null;
+        throw new Error(`getNombreEntreprises HTTP ${res.status}`);
       }
       return res.json();
-    });
+    }, `nbEntreprises:${codeRome}:${latitude}:${longitude}:${distance}`);
   }
 
   /**
