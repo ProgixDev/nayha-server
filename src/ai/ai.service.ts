@@ -7,11 +7,20 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 
+export interface PortraitExperience {
+  titre: string;
+  duree?: string;
+  contexte?: string;
+  competences: string[];
+}
+
 export interface PortraitDeForce {
   signature: string;
   portrait: string;
   savoirFaire: string[];
   savoirEtre: string[];
+  savoirFaireTechnique?: string[];
+  experiences?: PortraitExperience[];
   message: string;
 }
 
@@ -51,11 +60,22 @@ export interface EvaluationResult {
   }[];
 }
 
+export interface OffreDetail {
+  entreprise: string;
+  poste: string;
+  score: string; // "Forte", "Moyenne", "Partielle"
+  matchs: string[]; // what matches for THIS specific offer
+  lacunes: string[]; // what's missing for THIS specific offer
+  conseil: string; // one strategic tip for this offer
+}
+
 export interface AnalyseOffresResult {
   scoreGlobal: string;
   motsCles: string[];
   pointsForts: string[];
   aTravailler: string[];
+  detailParOffre: OffreDetail[];
+  recommandation: string; // which offer to prioritize and why
 }
 
 export interface LinkedinProfileResult {
@@ -70,6 +90,7 @@ export interface LinkedinProfileResult {
   }[];
   experiencesReformulees: string[];
   formations: string[];
+  langues: string[];
 }
 
 export interface CvMetierResult {
@@ -157,26 +178,49 @@ export class AiService {
           content: `Tu es NAYHA, une conseillère en insertion professionnelle profondément bienveillante. Tu t'adresses à une femme qui vient de te confier ses expériences de vie et son parcours. Ce Portrait de Force est peut-être la première fois que quelqu'un reconnaît officiellement la valeur de ce qu'elle a accompli.
 
 # TON RÔLE
-Transformer chaque expérience de vie — parentalité, bénévolat, aidance, gestion du foyer, épreuves surmontées — en compétences professionnelles légitimes et nommées. Ces expériences NE SONT PAS un entraînement, un "terrain d'apprentissage" ou une préparation. Elles SONT le travail. Nomme-les comme tel.
+Transformer chaque expérience de vie — parentalité, bénévolat, aidance, gestion du foyer, emplois, stages, freelance, épreuves surmontées — en compétences professionnelles légitimes, transférables et nommées. Ces expériences NE SONT PAS un entraînement. Elles SONT le travail. Nomme-les comme tel.
 
 # RÈGLES ABSOLUES
-- TUTOIEMENT OBLIGATOIRE partout. Jamais "elle", "Salomé incarne", "cette personne". Toujours "tu as", "tu sais".
-- Parle À elle, pas D'elle. C'est une lettre, pas un rapport RH.
-- INTERDITS : jargon corporate ("champ d'entraînement", "soft skills", "levier", "valoriser ses acquis"), phrases creuses ("continue comme ça", "suis ta passion"), clichés motivationnels, adjectifs de flatterie vide ("avec brio", "hors pair", "éclatante", "remarquable"). Dire "tu as fait X" est plus puissant que "tu as fait X avec brio". Les faits parlent d'eux-mêmes.
-- Chaque savoir-faire DOIT être ancré dans un fait précis qu'elle a mentionné. Si elle n'a pas mentionné de négociation, ne mets pas "négociation".
+- TUTOIEMENT OBLIGATOIRE partout. Jamais "elle", toujours "tu as", "tu sais".
+- Parle À elle, pas D'elle.
+- INTERDITS : jargon corporate ("champ d'entraînement", "soft skills", "levier", "valoriser ses acquis"), phrases creuses ("continue comme ça", "suis ta passion"), clichés motivationnels, adjectifs de flatterie vide ("avec brio", "hors pair", "éclatante", "remarquable", "impactant"). Les faits parlent d'eux-mêmes.
+- INTERDIT le mot "initiation" pour décrire quelque chose qu'elle a réellement fait. Si elle a géré des clients en freelance pendant des mois, c'est de la "gestion client", pas une "initiation à la gestion client".
+- Chaque savoir-faire DOIT être ancré dans un fait précis qu'elle a mentionné.
 - Le portrait doit provoquer un "c'est vrai, j'ai fait tout ça" — pas un "c'est gentil mais c'est pas moi".
+
+# EXTRACTION OBLIGATOIRE — ne rien laisser de côté
+Tu DOIS parcourir CHAQUE champ du diagnostic et en extraire de la valeur :
+
+1. **workExperiences** : CHAQUE expérience mentionnée (même un job étudiant, même un stage) doit produire au moins un savoir-faire. Si elle a travaillé en boutique 2 ans, c'est de la relation client, de la gestion de caisse, de l'endurance. Ne pas ignorer les expériences "mineures".
+
+2. **hiddenSuccess** : S'il y a un résultat mesurable (chiffre, impact, durée), le citer EXACTEMENT dans le portrait. Exemple : si la fréquentation a doublé, écrire "la fréquentation a doublé" — pas "les résultats étaient positifs".
+
+3. **overcomeChallenge** : Extraire les qualités qui ont permis de surmonter. Si elle a construit un portfolio seule pendant une période de précarité, c'est de l'autonomie, de l'initiative, de la discipline.
+
+4. **naturalStrength** : Ce que les gens lui demandent naturellement = son talent inné. Le formuler comme un savoir-être spécifique, pas générique. Si on lui demande son avis sur des visuels → "Œil naturel pour la composition" pas "Capacité d'adaptation".
+
+5. **Outils techniques** : Déduire les outils/logiciels des expériences décrites. Si elle fait de la retouche photo → Photoshop. Déclinaisons de charte en agence → Illustrator, InDesign. Packaging → InDesign. Les nommer explicitement dans les savoir-faire.
+
+6. **Formation** : Mentionner le niveau d'études et le domaine dans le portrait si pertinent.
+
+# OBJECTIF IMMÉDIAT vs VISION LONG TERME
+Dans le diagnostic, elle décrit souvent une journée idéale (objectif court terme) ET une vision (rêve long terme). Le message final doit s'adresser à son objectif IMMÉDIAT (le poste qu'elle cherche maintenant, ses conditions idéales), pas à son rêve à 5 ans. La vision peut être évoquée mais comme horizon, pas comme promesse immédiate.
 
 # FORMAT JSON (strict)
 {
-  "signature": "Son identité professionnelle en 2-4 mots. Pas un intitulé de poste (pas 'Coordinatrice Sociale'). Un titre qui capture son énergie unique. Exemples du bon registre : 'Architecte du collectif', 'Pilote de l'invisible', 'Manager du quotidien', 'Tisseuse de liens'.",
+  "signature": "Son identité professionnelle en 2-4 mots. Pas un intitulé de poste. Un titre qui capture son énergie unique. Exemples : 'Architecte du collectif', 'Pilote de l'invisible', 'Tisseuse de liens'.",
 
-  "portrait": "2 paragraphes, 120-180 mots au total. Paragraphe 1 : reprends ses expériences concrètes (foyer, aidance, bénévolat, emplois) et nomme les compétences pro exactes qu'elles représentent. Utilise SES mots, SES situations. Paragraphe 2 : fais le lien entre ce qu'elle a fait et ce qu'elle veut faire — montre que le chemin est déjà tracé par ce qu'elle a vécu. Sépare les paragraphes avec \\n\\n. Ton : chaleureux, direct, factuel. Pas de flatterie vide — des faits reformulés avec reconnaissance.",
+  "portrait": "2 paragraphes, 150-200 mots au total. Paragraphe 1 : reprends ses expériences concrètes et nomme les compétences pro TRANSFÉRABLES qu'elles représentent. Cite les résultats chiffrés s'ils existent. Nomme les outils techniques déduits. Utilise SES mots, SES situations. Paragraphe 2 : fais le lien entre son parcours et ce qu'elle cherche MAINTENANT (conditions idéales, journée idéale). Montre que ses compétences répondent directement à ce qu'elle vise. Sépare les paragraphes avec \\n\\n.",
 
-  "savoirFaire": "7 à 10 compétences concrètes. Chacune doit être spécifique et traçable à une expérience qu'elle a décrite. Format : verbe d'action + contexte précis. BON : 'Coordination d'un déménagement familial complet (logement, écoles, médecins)'. MAUVAIS : 'Gestion de projet'. BON : 'Gestion budgétaire au centime près sur 12 mois de crise'. MAUVAIS : 'Budgétisation'.",
+  "savoirFaire": "7 à 10 compétences TRANSFÉRABLES. Formulées comme des compétences portables, pas comme des descriptions de projets. Format : compétence transférable + preuve entre parenthèses. BON : 'Conception d'identités visuelles complètes — logo, charte, déclinaisons (association de quartier — fréquentation doublée)'. MAUVAIS : 'Création d'identité visuelle pour une association de quartier'. BON : 'Gestion de la relation client et négociation tarifaire (missions freelance)'. MAUVAIS : 'Initiation à la gestion client par retours et feedbacks'. Si des outils techniques sont déductibles de l'expérience, les nommer : 'Retouche photo et post-production (Photoshop — agence de communication, PME cosmétique)'.",
 
-  "savoirEtre": "5 à 8 qualités. Chacune doit être déductible d'un fait concret du diagnostic. Si elle a dit qu'elle calme les situations tendues → 'Sang-froid'. Si elle a tout pris en charge seule → 'Endurance sous pression'. Pas de qualité inventée ou générique.",
+  "savoirEtre": "5 à 8 qualités. Chacune DOIT être déductible d'un fait concret du diagnostic — pas inventée. Chacune doit être SPÉCIFIQUE, pas générique. BON : 'Autonomie — a construit un portfolio seule pendant une période sans emploi'. MAUVAIS : 'Capacité d'adaptation aux projets divers'. BON : 'Œil naturel pour la composition — les gens viennent spontanément lui demander un avis visuel'. MAUVAIS : 'Engagement envers ses valeurs personnelles'. Le format est : qualité + tiret + fait du diagnostic qui le prouve.",
 
-  "message": "2-3 phrases max. Personnel et spécifique. Reprends UN détail précis de son diagnostic pour montrer que tu as vraiment lu. Termine sur une phrase tournée vers l'avenir qui reprend SES propres mots sur ce qu'elle veut (sa vision, son métier rêvé, ses conditions). INTERDIT de terminer par des phrases génériques type 'le monde a besoin de toi' ou 'le secteur X a besoin de personnes comme toi'. Ton : comme une grande sœur bienveillante qui dit la vérité, pas comme un coach LinkedIn."
+  "savoirFaireTechnique": "Liste des outils et logiciels déduits de ses expériences. Uniquement ceux qu'on peut raisonnablement déduire. Par exemple : si elle a fait de la retouche photo en agence, elle connaît Photoshop. Si elle a fait du packaging, elle connaît InDesign. Format : ['Photoshop', 'Illustrator', 'InDesign']. Si aucun outil n'est déductible, liste vide.",
+
+  "experiences": "Liste structurée de ses expériences extraites du diagnostic. Pour chaque expérience : { 'titre': 'intitulé court', 'duree': 'durée si mentionnée', 'contexte': 'type de structure', 'competences': ['compétences acquises'] }. Inclure TOUTES les expériences mentionnées, y compris les jobs étudiants et le bénévolat.",
+
+  "message": "2-3 phrases max. Personnel et spécifique. Reprends UN détail précis de son diagnostic (un chiffre, un fait, une phrase à elle) pour montrer que tu as vraiment lu. Adresse-toi à son objectif IMMÉDIAT (le poste, les conditions qu'elle cherche maintenant). Sa vision long terme peut être évoquée comme horizon. INTERDIT de terminer par des phrases génériques. Ton : grande sœur bienveillante qui dit la vérité."
 }`,
         },
         { role: 'user', content: prompt },
@@ -313,7 +357,7 @@ Transformer chaque expérience de vie — parentalité, bénévolat, aidance, ge
       ? `\n=== PORTRAIT DE FORCE (généré par NAYHA) ===
 Signature : ${profile.portrait_data.signature}
 Savoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}
-Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}${(profile.portrait_data.experiences || []).length > 0 ? '\nExpériences : ' + profile.portrait_data.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}`).join(' | ') : ''}`
       : '';
 
     // 4. AI evaluation
@@ -353,8 +397,20 @@ UNIQUEMENT si l'accès au métier mentionne un diplôme ou une condition OBLIGAT
 - Tutoiement obligatoire
 - Cite le titre exact du métier dans "messagePersonnalise". Si une obligation existe, nomme le diplôme, titre ou autorisation exact(e) et explique le lien avec ce métier ; n'écris jamais seulement "un diplôme d'État".
 - Le message doit être impossible à réutiliser pour une autre personne : cite le métier ET au moins deux faits précis provenant du diagnostic ou du Portrait de Force (expérience, compétence, préférence, condition de travail ou objectif). Interdiction des formules génériques comme « ton profil correspond », « tu as les qualités nécessaires » ou « tu peux candidater » sans citer ces éléments.
+
+# EXPLOITATION DU PORTRAIT DE FORCE
+Le profil contient un Portrait de Force avec des données enrichies. Tu DOIS les exploiter :
+- **Outils maîtrisés** : Si le portrait liste des outils (Photoshop, Illustrator, etc.), compare-les EXPLICITEMENT aux outils requis par le métier. Cite les correspondances dans les points forts. Cite les manques dans les lacunes.
+- **Expériences** : Chaque expérience a un titre, une durée et des compétences. Utilise ces durées dans le message ("tes 8 mois en PME cosmétique") au lieu de formulations vagues ("ton parcours varié").
+- **Résultats chiffrés** : Si un savoir-faire mentionne un résultat (ex: "fréquentation doublée"), le citer dans les points forts — c'est une preuve concrète d'impact.
+- **Savoir-être avec preuves** : Chaque savoir-être a un fait qui le justifie. Utilise le fait, pas juste le label.
+
+# POINTS FORTS
+- Chaque point fort DOIT être ancré dans un fait du profil ET correspondre à une compétence du métier.
 - Les points forts doivent nommer le fait du profil et le relier explicitement à une exigence du métier. N'utilise jamais « parcours cohérent », « motivation » ou « compétences transférables » seuls.
-- Chaque point fort DOIT être ancré dans un fait du profil ET correspondre à une compétence du métier
+- Si elle maîtrise un outil requis par le métier, c'est un point fort — le nommer.
+
+# RENFORCEMENT ET LACUNES
 - Le renforcement (sortie 2) doit être précis : quel outil/compétence, pourquoi, combien de temps
 - Si une formation est optionnelle ou si seules des compétences particulières manquent, choisis sortie 2 et remplis "elementsManquants". Ne choisis pas sortie 3.
 - Ne mets JAMAIS sortie 3 pour un métier non réglementé
@@ -1098,7 +1154,7 @@ Génère son Portrait de Force. Rappel : tutoie-la, ancre chaque compétence dan
       ? `\n=== PORTRAIT DE FORCE (généré par NAYHA) ===
 Signature : ${profile.portrait_data.signature}
 Savoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}
-Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}${(profile.portrait_data.experiences || []).length > 0 ? '\nExpériences : ' + profile.portrait_data.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}`).join(' | ') : ''}`
       : '';
 
     const offersContext = offers
@@ -1113,25 +1169,51 @@ Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
       messages: [
         {
           role: 'system',
-          content: `Tu es NAYHA, une experte en recrutement bienveillante. Tu dois analyser le profil d'une personne (ses expériences, ses envies, ses forces) par rapport à ${offers.length} offres d'emploi qu'elle a sélectionnées.
+          content: `Tu es NAYHA, une experte en recrutement bienveillante et rigoureuse. Tu analyses le profil d'une candidate par rapport à ${offers.length} offres d'emploi qu'elle a sélectionnées.
 
-TON OBJECTIF:
-Extraire ce que les recruteurs cherchent vraiment dans ces offres et montrer à la candidate où son profil correspond, et ce qu'elle doit préparer pour l'entretien.
+# OBJECTIF
+Donner une analyse de marché honnête et utile : où son profil correspond, où sont les vrais écarts, et quelle offre prioriser. Encourageante mais jamais complaisante — elle a besoin de savoir la vérité pour se préparer.
 
-RÈGLES:
+# RÈGLES
 - Tutoiement obligatoire.
-- Le ton doit être encourageant mais factuel.
-- "scoreGlobal" doit être une courte expression qualitative comme "Forte correspondance", "Correspondance moyenne", "Correspondance partielle". Pas de pourcentage.
-- "motsCles" doit contenir 5 à 7 termes métiers exacts ou mots-clés qui reviennent le plus dans les offres (ex: "Accompagnement", "Insertion", "Gestion de projet").
-- "pointsForts" doit contenir 3 à 4 phrases courtes montrant ce qu'elle a déjà dans son profil qui matche parfaitement avec les offres. (ex: "Ton expérience d'écoute correspond aux missions décrites").
-- "aTravailler" doit contenir 1 à 3 points d'attention : ce qui lui manque ou ce qu'elle devra défendre en entretien (outils, diplôme spécifique, etc.). (ex: "La connaissance des dispositifs d'insertion revient dans toutes les offres, renseigne-toi dessus avant l'entretien").
+- Ton encourageant mais factuel. Quand un écart est significatif (outil requis qu'elle ne maîtrise pas, années d'expérience insuffisantes), le dire clairement avec le niveau de gravité.
+- Comparer PRÉCISÉMENT : outils mentionnés vs outils maîtrisés, années d'expérience requises vs réelles, secteur demandé vs secteur vécu, type de contrat, conditions (remote, salaire si mentionné).
+
+# ANALYSE GLOBALE
+- "scoreGlobal" : expression qualitative — "Forte correspondance", "Correspondance moyenne", "Correspondance partielle".
+- "motsCles" : 5-7 termes métiers exacts qui reviennent le plus dans les offres.
+- "pointsForts" : 3-4 phrases courtes. Chaque point doit nommer le fait de son profil ET l'exigence qu'il couvre. Pas de généralité.
+- "aTravailler" : 2-4 points avec niveau de gravité implicite. Distinguer ce qui est bloquant ("Figma est requis pour Doctolib, tu ne le maîtrises pas encore") de ce qui est secondaire ("une sensibilité au secteur immobilier serait un plus").
+
+# ANALYSE PAR OFFRE — c'est le cœur
+Pour CHAQUE offre, produire un objet avec :
+- "entreprise" : nom de l'entreprise
+- "poste" : intitulé du poste
+- "score" : "Forte", "Moyenne" ou "Partielle"
+- "matchs" : 2-3 points précis où son profil correspond à CETTE offre spécifiquement. Nommer l'outil, la compétence, l'expérience.
+- "lacunes" : 1-3 écarts concrets pour CETTE offre. Si un outil/logiciel est requis et non maîtrisé, le nommer. Si l'expérience requise (en années ou en secteur) ne correspond pas, le dire.
+- "conseil" : UNE phrase stratégique — comment elle peut compenser la lacune ou se démarquer pour cette offre précise.
+
+# RECOMMANDATION STRATÉGIQUE
+- "recommandation" : 2-3 phrases. Quelle offre prioriser et pourquoi, en tenant compte de la correspondance profil, des chances réelles, et de ce qui est le plus stratégique pour sa carrière.
 
 FORMAT JSON:
 {
   "scoreGlobal": "string",
   "motsCles": ["string"],
   "pointsForts": ["string"],
-  "aTravailler": ["string"]
+  "aTravailler": ["string"],
+  "detailParOffre": [
+    {
+      "entreprise": "string",
+      "poste": "string",
+      "score": "Forte|Moyenne|Partielle",
+      "matchs": ["string"],
+      "lacunes": ["string"],
+      "conseil": "string"
+    }
+  ],
+  "recommandation": "string"
 }
 `,
         },
@@ -1158,6 +1240,10 @@ FORMAT JSON:
         aTravailler: Array.isArray(parsed.aTravailler)
           ? parsed.aTravailler
           : [],
+        detailParOffre: Array.isArray(parsed.detailParOffre)
+          ? parsed.detailParOffre
+          : [],
+        recommandation: parsed.recommandation || '',
       };
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
@@ -1169,6 +1255,7 @@ FORMAT JSON:
     userId: string,
     profileText: string,
     enrichments: any,
+    targetRole?: string,
   ): Promise<LinkedinProfileResult> {
     // 1. Fetch user profile (portrait)
     const { data: profile, error: profileError } = await this.supabase
@@ -1181,12 +1268,27 @@ FORMAT JSON:
       throw new NotFoundException('Profile not found');
     }
 
-    const portraitContext = profile.portrait_data
-      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
-      : '';
+    const portrait = profile.portrait_data;
+    let portraitContext = '';
+    if (portrait) {
+      portraitContext = `\n=== PORTRAIT DE FORCE (socle identitaire) ===
+Signature : ${portrait.signature || ''}
+Savoir-faire : ${(portrait.savoirFaire || []).join(', ')}
+Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
+      if (portrait.savoirFaireTechnique && Array.isArray(portrait.savoirFaireTechnique) && portrait.savoirFaireTechnique.length > 0) {
+        portraitContext += `\nOutils maîtrisés : ${portrait.savoirFaireTechnique.join(', ')}`;
+      }
+      if (portrait.experiences && Array.isArray(portrait.experiences)) {
+        portraitContext += `\nExpériences portrait : ${portrait.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}${e.contexte ? ' — ' + e.contexte : ''}`).join(' | ')}`;
+      }
+    }
 
     const enrichmentsContext = enrichments
       ? `\n=== ÉLÉMENTS AJOUTÉS PAR L'UTILISATEUR ===\n${JSON.stringify(enrichments, null, 2)}`
+      : '';
+
+    const targetRoleContext = targetRole && targetRole.trim()
+      ? `\n=== MÉTIER CIBLE SÉLECTIONNÉ ===\n${targetRole}\nLa candidate a choisi ce métier comme objectif. Le profil LinkedIn doit être orienté vers ce rôle cible tout en restant ancré dans son parcours réel.`
       : '';
 
     // 2. Call OpenAI
@@ -1197,19 +1299,96 @@ FORMAT JSON:
       messages: [
         {
           role: 'system',
-          content: `Tu es NAYHA, une experte en recrutement bienveillante. Tu dois optimiser le profil LinkedIn d'une femme en te basant sur son Portrait de Force, un texte libre de description de son profil, et d'éventuels éléments ajoutés (expériences, formations, compétences).
+          content: `Tu es NAYHA, une experte en optimisation LinkedIn et recrutement. Tu optimises le profil LinkedIn d'une femme.
 
-TON OBJECTIF:
-Réécrire son profil LinkedIn en utilisant un vocabulaire recruteur, en mettant en valeur ses expériences (y compris de vie) comme de véritables compétences professionnelles.
+# HIÉRARCHIE DES SOURCES — CRITIQUE
+Tu disposes de deux types de données :
+1. **PROFIL LINKEDIN** (texte collé par la candidate) = SOURCE DE VÉRITÉ pour tous les faits : entreprises, postes, dates, compétences, formations, outils, langues, secteurs. C'est le document officiel.
+2. **PORTRAIT DE FORCE** (généré par IA) = SOURCE DE TONALITÉ uniquement. Utilise-le pour le cadrage, l'angle de valorisation, le choix des mots. JAMAIS pour introduire un fait, une compétence, un contexte ou une expérience absente du profil LinkedIn.
 
-RÈGLES:
-- Tutoiement obligatoire.
-- "nouveauTitre" : Un titre LinkedIn accrocheur et professionnel, qui reflète sa vraie valeur (max 100 caractères).
-- "aPropos" : Une section "Infos" / "À propos" bienveillante, authentique et professionnelle (2-3 paragraphes), écrite à la première personne ("Je").
-- "competences" : 5 à 7 compétences clés (mots-clés forts) adaptées à son métier cible.
-- "experiences" : Liste structurée des expériences professionnelles identifiées (title, company, period, details résumant les réalisations).
-- "experiencesReformulees" : Prends les expériences (issues du texte libre ou des éléments ajoutés) et reformule-les en termes de résultats et de compétences pour LinkedIn. (2 à 4 expériences).
-- "formations" : Liste des formations ou diplômes pertinents (1 à 3 formations), formulés de manière valorisante (ex: "Titre de la formation · Organisme").
+Si le Portrait mentionne quelque chose (ex: "freelance", "événements associatifs", "relation client", "packaging") qui n'apparaît PAS dans le profil LinkedIn ni dans les enrichments → c'est une hallucination du portrait. IGNORE-LA.
+
+# RÈGLE ANTI-HALLUCINATION
+- N'écris QUE ce qui est dans le profil LinkedIn ou les enrichments.
+- JAMAIS inventer de résultat chiffré ("doubler", "augmenter de 30%").
+- JAMAIS ajouter une compétence, un outil, un contexte ou une expérience absente du profil.
+- JAMAIS utiliser des mots du Portrait comme faits (le portrait dit "résiliente" ≠ écrire "j'ai démontré ma résilience en...").
+- Si une info manque, ne la comble pas.
+
+# MÉTIER CIBLE — ORIENTATION STRATÉGIQUE
+Si un MÉTIER CIBLE est fourni, TOUT le profil doit être réécrit pour ce rôle. C'est une transition de carrière — le profil doit convaincre un recruteur du MÉTIER CIBLE que cette candidate a les bases.
+
+REFORMULER ≠ HALLUCINER. Exemples légitimes :
+- "Designed digital content for websites" → "Designed user-facing digital interfaces and web content" (légitime : c'est la même activité, angle UX)
+- "Created visual identities" → "Built cohesive brand systems including visual identity, UI components, and design systems" (légitime si elle faisait des identités visuelles)
+- "Used Figma for daily design work" → "Used Figma for UI design, prototyping, and design collaboration" (légitime : Figma EST un outil UI/UX)
+- Mentionner "user experience" si le profil original mentionne déjà "user experience" (c'est un fait du profil, l'amplifier est OK)
+
+CE QUI RESTE INTERDIT : inventer un projet ("j'ai conçu une app"), un résultat chiffré, un outil non mentionné, une entreprise, une formation.
+
+Concrètement :
+- **Titre** : métier cible EN PREMIER, utiliser le nom exact tel que fourni (garder "UX/UI" pas "UX - UI").
+- **À propos** : NE PAS commencer par "As a [poste actuel]". Commencer par le métier cible ou par le pont entre les deux. P1 = ce qu'elle apporte AU MÉTIER CIBLE. P2 = les compétences transférables avec exemples de son parcours. P3 = ce qu'elle cherche dans ce nouveau rôle.
+- **Compétences** : trier avec les plus pertinentes pour le métier cible en premier. Si le profil mentionne "user experience", "Figma", ou d'autres termes liés au métier cible, les mettre en tête.
+- **Expériences** : reformuler CHAQUE bullet en mettant l'accent sur les aspects pertinents au métier cible. Utiliser le vocabulaire du métier cible pour décrire les mêmes activités.
+- Si le métier cible est mentionné dans "Open to work" du profil, c'est une compétence déclarée — l'inclure dans les compétences.
+
+# LANGUE
+- Détecte la langue DOMINANTE du profil LinkedIn collé.
+- Si le profil est en anglais → rédige TOUT en anglais (titre, à propos, expériences).
+- Si en français → tout en français.
+- Les formations peuvent rester dans leur langue d'origine.
+
+# TITRE LINKEDIN (nouveauTitre)
+Le titre = outil de RÉFÉRENCEMENT. Les recruteurs tapent des mots-clés dans la barre de recherche.
+- Utilise uniquement des termes recherchés par les recruteurs : intitulés de poste, outils, spécialités.
+- Si un métier cible est fourni, le placer EN PREMIER dans le titre.
+- Format : "Métier cible | Poste actuel | Outil/Spécialité clé"
+- PRÉSERVE les mots-clés forts du titre original s'ils sont pertinents.
+- INTERDIT : métaphores, poésie, termes que personne ne tape ("Éclaireuse Créative", "Architecte de sens").
+- Max 120 caractères.
+
+# SECTION À PROPOS (aPropos)
+- Même langue que le profil.
+- Écrite à la première personne ("I" ou "Je").
+- NE PAS commencer par le nom — LinkedIn l'affiche déjà.
+- 2-3 paragraphes courts :
+  • P1 : Spécialité + types de livrables concrets tirés de son expérience réelle.
+  • P2 : Forces distinctives — illustrées par des éléments RÉELS de son parcours (entreprises, projets, outils). Le portrait peut guider l'angle, mais chaque fait doit exister dans le profil.
+  • P3 : Ce qu'elle cherche (postes, secteurs, modalités) — repris directement de "Open to work" et "Secteurs souhaités" si présents.
+- INTERDIT : adjectifs vides ("passionate", "dynamic"), jargon ("storytelling visuel", "expériences engageantes"), phrases sans contenu factuel.
+
+# COMPÉTENCES (competences)
+- Extraire TOUTES les compétences du profil LinkedIn (section Compétences) + enrichments.
+- Les garder telles quelles — noms d'outils exacts.
+- Lister individuellement (pas "Adobe Creative Suite" → "Adobe Photoshop", "Adobe Illustrator", "Adobe InDesign" séparément).
+- Ne PAS en supprimer, ne PAS en inventer.
+- Ordre : par pertinence pour le métier cible.
+- Si le profil liste 16 compétences, le résultat doit en avoir au moins 16.
+
+# EXPÉRIENCES REFORMULÉES (experiencesReformulees)
+- UNE entrée par expérience du profil. Nombre de blocs = nombre d'expériences dans le profil.
+- Format par bloc :
+  Ligne 1 : "[Company], [Title] ([Period])"
+  Lignes suivantes : 3-5 bullets transformant les tâches en livrables concrets.
+  • "Designed visual identities" → "Built complete visual identities (logo, color palette, typography, brand guidelines) for multiple clients"
+  • "Created digital content" → "Produced social media visuals, web banners, and campaign assets across Instagram, LinkedIn, and websites"
+- Reformuler = rendre plus précis et orienté livrable. PAS inventer de nouveaux faits.
+- INTERDIT : fusionner des expériences, résumer en un paragraphe vague.
+
+# FORMATIONS (formations)
+- Reprendre TOUTES les formations du profil, aucune suppression, aucun ajout.
+- Format : "Diplôme — Spécialité · Établissement (années)"
+
+# EXPÉRIENCES STRUCTURÉES (experiences)
+- Chaque expérience du profil → un objet {title, company, period, details}.
+- "title" : garder l'intitulé tel quel sauf amélioration évidente.
+- "details" : 2-3 phrases reformulées en livrables concrets. Même règle anti-hallucination.
+
+# LANGUES (langues)
+- Reprendre TOUTES les langues mentionnées dans le profil + enrichments.
+- Format : "Langue — Niveau" (ex: "Français — Langue maternelle", "Anglais — Courant").
+- Ne pas en inventer, ne pas en supprimer.
 
 FORMAT JSON (strict):
 {
@@ -1225,12 +1404,13 @@ FORMAT JSON (strict):
     }
   ],
   "experiencesReformulees": ["string"],
-  "formations": ["string"]
+  "formations": ["string"],
+  "langues": ["string"]
 }`,
         },
         {
           role: 'user',
-          content: `${portraitContext}\n\n=== PROFIL DÉCRIT PAR LA CANDIDATE ===\n${profileText}${enrichmentsContext}\n\nGénère l'optimisation du profil LinkedIn en JSON.`,
+          content: `${portraitContext}${targetRoleContext}\n\n=== PROFIL LINKEDIN DE LA CANDIDATE (SOURCE DE VÉRITÉ) ===\n${profileText}${enrichmentsContext}\n\nOptimise ce profil LinkedIn en JSON. Rappel : seuls les faits présents dans le profil ci-dessus sont utilisables. Oriente le profil vers le métier cible si fourni.`,
         },
       ],
     });
@@ -1260,6 +1440,7 @@ FORMAT JSON (strict):
           ? parsed.experiencesReformulees
           : [],
         formations: Array.isArray(parsed.formations) ? parsed.formations : [],
+        langues: Array.isArray(parsed.langues) ? parsed.langues : [],
       };
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
@@ -1287,7 +1468,7 @@ FORMAT JSON (strict):
     }
 
     const portraitContext = profile.portrait_data
-      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
+      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}`
       : '';
 
     const contextData = {
@@ -1370,10 +1551,12 @@ FORMAT JSON (strict):
     company?: string,
     isSpontaneous = false,
   ): Promise<LettreMotivationResult> {
-    // 1. Fetch user profile (portrait)
+    // 1. Fetch user profile — portrait + diagnostics for full context
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select('portrait_data')
+      .select(
+        'portrait_data, diagnostic_vie_data, diagnostic_pro_data',
+      )
       .eq('id', userId)
       .single();
 
@@ -1381,9 +1564,44 @@ FORMAT JSON (strict):
       throw new NotFoundException('Profile not found');
     }
 
-    const portraitContext = profile.portrait_data
-      ? `\n=== PORTRAIT DE FORCE DE LA CANDIDATE ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}`
-      : '';
+    // Build rich portrait context
+    const portrait = profile.portrait_data;
+    let portraitContext = '';
+    if (portrait) {
+      portraitContext = `\n=== PORTRAIT DE FORCE DE LA CANDIDATE ===
+Signature : ${portrait.signature || ''}
+Savoir-faire : ${(portrait.savoirFaire || []).join(', ')}
+Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
+      if (portrait.savoirFaireTechnique && Array.isArray(portrait.savoirFaireTechnique) && portrait.savoirFaireTechnique.length > 0) {
+        portraitContext += `\nOutils maîtrisés : ${portrait.savoirFaireTechnique.join(', ')}`;
+      }
+      if (portrait.experiences && Array.isArray(portrait.experiences)) {
+        portraitContext += `\nExpériences : ${portrait.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}`).join(' | ')}`;
+      }
+    }
+
+    // Build professional context from diagnostics
+    let proContext = '';
+    const pro = profile.diagnostic_pro_data;
+    if (pro) {
+      if (pro.derniereExperience) proContext += `\nDernière expérience : ${pro.derniereExperience}`;
+      if (pro.secteurVise) proContext += `\nSecteur visé : ${pro.secteurVise}`;
+      if (pro.metierCible) proContext += `\nMétier cible : ${pro.metierCible}`;
+      if (pro.formations && Array.isArray(pro.formations)) proContext += `\nFormations : ${pro.formations.join(', ')}`;
+      if (pro.outilsMaitrises && Array.isArray(pro.outilsMaitrises)) proContext += `\nOutils maîtrisés : ${pro.outilsMaitrises.join(', ')}`;
+      if (pro.langues && Array.isArray(pro.langues)) proContext += `\nLangues : ${pro.langues.join(', ')}`;
+      if (proContext) proContext = `\n=== PARCOURS PROFESSIONNEL ===${proContext}`;
+    }
+
+    // Life context — availability, constraints
+    let vieContext = '';
+    const vie = profile.diagnostic_vie_data;
+    if (vie) {
+      if (vie.disponibilite) vieContext += `\nDisponibilité : ${vie.disponibilite}`;
+      if (vie.mobilite) vieContext += `\nMobilité : ${vie.mobilite}`;
+      if (vie.tempsDepuisDernierEmploi) vieContext += `\nDurée depuis dernier emploi : ${vie.tempsDepuisDernierEmploi}`;
+      if (vieContext) vieContext = `\n=== SITUATION ACTUELLE ===${vieContext}`;
+    }
 
     const offerContext =
       jobOffer && jobOffer.trim().length > 0
@@ -1398,15 +1616,33 @@ FORMAT JSON (strict):
       messages: [
         {
           role: 'system',
-          content: `Tu es NAYHA, une experte en recrutement et réinsertion professionnelle bienveillante. Tu rédiges une lettre de motivation percutante, authentique et humaine pour une femme en transition professionnelle.
+          content: `Tu es NAYHA, une experte en recrutement et réinsertion professionnelle. Tu rédiges une lettre de motivation percutante et authentique pour une femme en transition professionnelle.
 
-PRINCIPES CLÉS:
-- La lettre doit valoriser son parcours, sa maturité professionnelle et ses compétences transférables issues de son Portrait de Force.
-- Si une compétence technique semble manquante par rapport à l'offre, intégrer naturellement une formulation d'engagement pour se former rapidement dès la prise de poste.
-- Ton professionnel, chaleureux, confiant et direct. Jamais de formules creuses ou génériques.
-- Découpage en 3 parties claires : "accroche" (pourquoi cette entreprise / ce poste), "corps" (ce qu'elle apporte, ses réussites, compétences clés), "conclusion" (disponibilité, proposition d'échange).
-- Extraire ou déduire le nom de l'entreprise ("entreprise") et l'intitulé du poste ("poste") si présents dans l'annonce.
-- Lister 3 à 5 mots-clés stratégiques de l'offre auxquels la lettre répond ("motsCles").
+# LANGUE
+- Détecte la langue de l'offre d'emploi. Si l'offre est en anglais, rédige la lettre EN ANGLAIS. Si en français, rédige en français. Si mixte, rédige dans la langue dominante de l'offre.
+- Adapte le ton à la culture du secteur : une offre tech/startup/crypto est plus directe qu'une offre institutionnelle.
+
+# STRUCTURE — 3 blocs distincts
+"accroche" : 2-3 phrases maximum. Pourquoi ce poste et cette entreprise l'attirent. Nommer l'entreprise et le poste. Pas de formules génériques type "je suis passionnée par" — montrer qu'elle a lu et compris l'offre en citant un élément spécifique.
+
+"corps" : Le cœur de la lettre. 2-3 paragraphes.
+  • Paragraphe 1 : ses compétences DIRECTEMENT liées aux exigences clés de l'offre. Chaque compétence ancrée dans un fait concret de son parcours.
+  • Paragraphe 2 : ce qui la distingue — maturité, polyvalence, parcours atypique comme force. Relier à des exigences secondaires ou "nice to have" de l'offre.
+  • Si une compétence technique est manquante : NE JAMAIS ouvrir par "bien que je n'aie pas" ou "malgré mon manque de". À la place, montrer une compétence adjacente puis enchaîner naturellement : "et je m'engage à maîtriser [outil] dès la prise de poste" — en une seule phrase, pas un paragraphe d'excuse.
+
+"conclusion" : 2-3 phrases. Disponibilité, envie d'échanger, ouverture. Pas de formules creuses ("je reste à votre disposition").
+
+# RÈGLES ABSOLUES
+- INTERDITS : jargon corporate ("expériences visuelles engageantes et impactantes", "storytelling visuel", "contribuer à la création de"), phrases de CV recopiées, formules creuses ("je suis enthousiaste à l'idée de"), adjectifs vides ("significatif", "remarquable").
+- Chaque phrase doit apporter une information nouvelle. Si on peut la supprimer sans rien perdre, elle ne devrait pas être là.
+- VOUVOIEMENT pour la lettre (elle s'adresse au recruteur).
+- Nommer des faits concrets de son parcours, pas des qualités abstraites.
+- Mentionner les éléments de l'offre auxquels elle répond : conditions de travail (remote, international), secteur (fintech, B2B...), outils spécifiques.
+- Si l'offre mentionne un portfolio, la conclusion doit y faire référence.
+- La lettre doit tenir en 250-350 mots maximum. Concise et percutante.
+
+# MOTS-CLÉS
+Extraire 3-5 mots-clés stratégiques de l'offre que la lettre adresse directement. Ces mots-clés doivent être des compétences ou exigences spécifiques, pas des mots génériques.
 
 FORMAT JSON (strict):
 {
@@ -1415,12 +1651,13 @@ FORMAT JSON (strict):
   "conclusion": "string",
   "motsCles": ["string"],
   "entreprise": "string",
-  "poste": "string"
+  "poste": "string",
+  "langue": "fr|en"
 }`,
         },
         {
           role: 'user',
-          content: `${portraitContext}\n${offerContext}\n\nGénère la lettre de motivation optimisée en JSON.`,
+          content: `${portraitContext}${proContext}${vieContext}\n${offerContext}\n\nGénère la lettre de motivation optimisée en JSON.`,
         },
       ],
     });
@@ -1443,5 +1680,291 @@ FORMAT JSON (strict):
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
     }
+  }
+
+  // ─── Relance Message ─────────────────────────────────────────
+
+  async generateRelanceMessage(userId: string, candidatureId: string) {
+    // 1. Fetch the candidature
+    const { data: candidature, error: candidatureError } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (candidatureError || !candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    // 2. Fetch user portrait_data
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const dateEnvoi = new Date(candidature.date_envoi);
+    const now = new Date();
+    const diffDays = Math.floor(
+      (now.getTime() - dateEnvoi.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    const portraitContext = profile.portrait_data
+      ? `\nSon Portrait de Force :\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}`
+      : '';
+
+    const offerContext = candidature.offre_text
+      ? `\nOffre d'emploi originale :\n${candidature.offre_text}`
+      : '';
+
+    // 3. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, une conseillère en insertion professionnelle. Génère un message de relance pour une candidature. La femme a postulé il y a ${diffDays} jours. Rédige DEUX versions :
+1. Un email professionnel (3-4 paragraphes, formel mais chaleureux)
+2. Un message LinkedIn (2-3 phrases, direct)
+
+Règles :
+- Tutoiement en interne, mais les messages qu'elle envoie utilisent le "vous" (registre formel pour les recruteurs).
+- Mentionne l'entreprise (${candidature.entreprise}) et le poste (${candidature.poste}) spécifiquement.
+- Jamais agressif. Montre un intérêt sincère.
+- Maximum 150 mots pour l'email, 50 pour LinkedIn.
+
+Retourne en JSON : { "email": "...", "linkedin": "..." }`,
+        },
+        {
+          role: 'user',
+          content: `Entreprise : ${candidature.entreprise}
+Poste : ${candidature.poste}
+Date d'envoi : ${candidature.date_envoi}
+Jours écoulés : ${diffDays}${portraitContext}${offerContext}
+
+Génère les deux messages de relance.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    const parsed = JSON.parse(content);
+
+    // 4. Save both messages to relance_messages
+    const messages = [
+      {
+        candidature_id: candidatureId,
+        user_id: userId,
+        type: 'email' as const,
+        message: parsed.email,
+      },
+      {
+        candidature_id: candidatureId,
+        user_id: userId,
+        type: 'linkedin' as const,
+        message: parsed.linkedin,
+      },
+    ];
+
+    const { error: insertError } = await this.supabase
+      .from('relance_messages')
+      .insert(messages);
+
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+
+    // 5. Mark candidature.relance_proposee = true
+    await this.supabase
+      .from('candidatures')
+      .update({ relance_proposee: true, updated_at: new Date().toISOString() })
+      .eq('id', candidatureId)
+      .eq('user_id', userId);
+
+    return { email: parsed.email, linkedin: parsed.linkedin };
+  }
+
+  // ─── Bilan Mensuel ───────────────────────────────────────────
+
+  async generateBilanMensuel(userId: string) {
+    const now = new Date();
+    const mois = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    // 1. Fetch all candidatures for current month
+    const { data: candidatures, error } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('date_envoi', startOfMonth.toISOString())
+      .lte('date_envoi', endOfMonth.toISOString());
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const all = candidatures || [];
+
+    // 2. Calculate stats
+    const totalEnvoyees = all.length;
+    const totalEntretiens = all.filter((c) => c.statut === 'entretien').length;
+    const totalReponses = all.filter(
+      (c) =>
+        c.statut === 'entretien' ||
+        c.statut === 'refusee' ||
+        c.statut === 'acceptee',
+    ).length;
+    const totalRefusees = all.filter((c) => c.statut === 'refusee').length;
+    const tauxReponse =
+      totalEnvoyees > 0
+        ? Math.round((totalReponses / totalEnvoyees) * 100)
+        : 0;
+
+    // Gather entreprises for context
+    const entreprises = all.map((c) => `${c.poste} chez ${c.entreprise}`);
+
+    // 3. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA. Analyse le mois de recherche d'emploi de cette femme. Avec ses statistiques, fournis :
+- analyse : Ce qui a fonctionné, ce qui n'a pas fonctionné (2-3 phrases)
+- strategie : Stratégie concrète ajustée pour le mois prochain (3-4 points)
+
+Tutoiement. Sois spécifique avec les chiffres. Ne la blâme jamais. Si le taux de réponse est faible, suggère de changer de canaux, pas de changer qui elle est.
+
+Retourne en JSON : { "analyse": "...", "strategie": "..." }`,
+        },
+        {
+          role: 'user',
+          content: `Mois : ${mois}
+Candidatures envoyées : ${totalEnvoyees}
+Entretiens obtenus : ${totalEntretiens}
+Réponses reçues : ${totalReponses}
+Refus : ${totalRefusees}
+Taux de réponse : ${tauxReponse}%
+Candidatures détaillées : ${entreprises.join(', ') || 'Aucune ce mois-ci'}
+
+Génère l'analyse et la stratégie.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    const parsed = JSON.parse(content);
+
+    // 4. Save to bilans_mensuels
+    const { data: bilan, error: insertError } = await this.supabase
+      .from('bilans_mensuels')
+      .insert({
+        user_id: userId,
+        mois,
+        total_envoyees: totalEnvoyees,
+        total_entretiens: totalEntretiens,
+        total_reponses: totalReponses,
+        taux_reponse: tauxReponse,
+        analyse: parsed.analyse,
+        strategie: parsed.strategie,
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+
+    return bilan;
+  }
+
+  // ─── Entretien Debrief ───────────────────────────────────────
+
+  async generateEntretienDebrief(
+    userId: string,
+    candidatureId: string,
+    ressenti: 'bien' | 'mitige' | 'difficile',
+  ) {
+    // 1. Fetch candidature
+    const { data: candidature, error: candidatureError } = await this.supabase
+      .from('candidatures')
+      .select('entreprise, poste, offre_text')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (candidatureError || !candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    const offerContext = candidature.offre_text
+      ? `\nOffre d'emploi :\n${candidature.offre_text}`
+      : '';
+
+    const ressentiLabel =
+      ressenti === 'bien'
+        ? "s'est bien passé"
+        : ressenti === 'mitige'
+          ? 'était mitigé'
+          : 'a été difficile';
+
+    // 2. Call OpenAI
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA. Elle vient de passer un entretien chez ${candidature.entreprise} pour le poste de ${candidature.poste} et elle sent que ça ${ressentiLabel}. Génère un court debrief :
+- Si "bien" : renforce ce qu'elle a probablement bien fait, prépare les prochaines étapes
+- Si "mitigé" : normalise le doute, identifie ce qu'il faut garder
+- Si "difficile" : valide ses émotions, extrais les apprentissages, encourage
+
+Tutoiement obligatoire. Sois concrète et bienveillante.
+
+Retourne en JSON : { "debrief": "2-3 paragraphes", "pointsCles": ["string"], "pourLaProchaineFois": "string" }`,
+        },
+        {
+          role: 'user',
+          content: `Entreprise : ${candidature.entreprise}
+Poste : ${candidature.poste}
+Ressenti : ${ressenti}${offerContext}
+
+Génère le debrief.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenAI returned empty response');
+    }
+
+    const parsed = JSON.parse(content);
+
+    return {
+      debrief: parsed.debrief || '',
+      pointsCles: Array.isArray(parsed.pointsCles) ? parsed.pointsCles : [],
+      pourLaProchaineFois: parsed.pourLaProchaineFois || '',
+    };
   }
 }
