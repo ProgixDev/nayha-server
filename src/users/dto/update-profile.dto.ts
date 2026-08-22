@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsObject, IsOptional, IsString } from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -28,4 +28,24 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   selected_metier_titre?: string;
+
+  @IsOptional()
+  @IsObject()
+  cv_base?: Record<string, any>;
+
+  @IsOptional()
+  @IsObject()
+  linkedin_profil?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  parcours_type?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  parcours_analyse_completed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  parcours_first_candidature_completed?: boolean;
 }

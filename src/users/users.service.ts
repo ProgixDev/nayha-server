@@ -56,6 +56,11 @@ export class UsersService {
       has_paid?: boolean;
       selected_metier_id?: string;
       selected_metier_titre?: string;
+      cv_base?: Record<string, any>;
+      linkedin_profil?: Record<string, any>;
+      parcours_type?: string;
+      parcours_analyse_completed?: boolean;
+      parcours_first_candidature_completed?: boolean;
     },
   ) {
     const { data, error } = await this.supabase
