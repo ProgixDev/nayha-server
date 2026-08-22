@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -1603,11 +1604,11 @@ FORMAT JSON (strict):
     company?: string,
     isSpontaneous = false,
   ): Promise<LettreMotivationResult> {
-    // 1. Fetch user profile — portrait + diagnostics for full context
+    // 1. Fetch user profile — portrait + diagnostics + linkedin + cv for full context
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
       .select(
-        'portrait_data, diagnostic_vie_data, diagnostic_pro_data',
+        'portrait_data, diagnostic_vie_data, diagnostic_pro_data, linkedin_profil, cv_base',
       )
       .eq('id', userId)
       .single();
@@ -1655,6 +1656,33 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
       if (vieContext) vieContext = `\n=== SITUATION ACTUELLE ===${vieContext}`;
     }
 
+    // LinkedIn profile context — optimized title, about, competences
+    let linkedinContext = '';
+    const li = profile.linkedin_profil;
+    if (li) {
+      if (li.nouveauTitre) linkedinContext += `\nTitre LinkedIn optimisé : ${li.nouveauTitre}`;
+      if (li.aPropos) linkedinContext += `\nÀ propos LinkedIn : ${li.aPropos}`;
+      if (li.competences && Array.isArray(li.competences) && li.competences.length > 0) {
+        linkedinContext += `\nCompétences clés identifiées : ${li.competences.join(', ')}`;
+      }
+      if (linkedinContext) linkedinContext = `\n=== PROFIL LINKEDIN OPTIMISÉ ===${linkedinContext}`;
+    }
+
+    // CV context — structured experiences and skills
+    let cvContext = '';
+    const cv = profile.cv_base;
+    if (cv) {
+      if (cv.experiences && Array.isArray(cv.experiences) && cv.experiences.length > 0) {
+        const expLines = cv.experiences.map((e: any) => `${e.title}${e.company ? ' — ' + e.company : ''}${e.period ? ' (' + e.period + ')' : ''}${e.details ? ': ' + e.details : ''}`).join('\n');
+        cvContext += `\nExpériences CV :\n${expLines}`;
+      }
+      if (cv.skills && Array.isArray(cv.skills) && cv.skills.length > 0) {
+        cvContext += `\nCompétences CV : ${cv.skills.join(', ')}`;
+      }
+      if (cv.education) cvContext += `\nFormation CV : ${cv.education}`;
+      if (cvContext) cvContext = `\n=== CV GÉNÉRÉ ===${cvContext}`;
+    }
+
     const offerContext =
       jobOffer && jobOffer.trim().length > 0
         ? `\n=== OFFRE D'EMPLOI VISÉE ===\n${jobOffer}`
@@ -1668,48 +1696,95 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
       messages: [
         {
           role: 'system',
-          content: `Tu es NAYHA, une experte en recrutement et réinsertion professionnelle. Tu rédiges une lettre de motivation percutante et authentique pour une femme en transition professionnelle.
+          content: `You are NAYHA, an expert in recruitment and professional reintegration. You write sharp, authentic cover letters for women in career transition.
 
-# LANGUE
-- Détecte la langue de l'offre d'emploi. Si l'offre est en anglais, rédige la lettre EN ANGLAIS. Si en français, rédige en français. Si mixte, rédige dans la langue dominante de l'offre.
-- Adapte le ton à la culture du secteur : une offre tech/startup/crypto est plus directe qu'une offre institutionnelle.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 0 — LANGUAGE (execute first, before anything else)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Read the job offer language. Write the ENTIRE letter in that language.
+- Job offer in English → letter in English. The candidate profile is in French — IGNORE that. Write in English.
+- Job offer in French → letter in French.
+- Job offer in another language → match it.
+The candidate's profile language NEVER influences the letter language. Only the offer language does.
 
-# STRUCTURE — 3 blocs distincts
-"accroche" : 2-3 phrases maximum. Pourquoi ce poste et cette entreprise l'attirent. Nommer l'entreprise et le poste. Pas de formules génériques type "je suis passionnée par" — montrer qu'elle a lu et compris l'offre en citant un élément spécifique.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — ANALYSE THE OFFER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Before writing, identify:
+A) MUST-HAVE technical skills listed (tools, stacks, platforms, languages)
+B) MUST-HAVE soft/experience requirements (years, sector, collaboration style)
+C) NICE-TO-HAVE skills
+D) Work conditions: remote / on-site / city / timezone / contract type
 
-"corps" : Le cœur de la lettre. 2-3 paragraphes.
-  • Paragraphe 1 : ses compétences DIRECTEMENT liées aux exigences clés de l'offre. Chaque compétence ancrée dans un fait concret de son parcours.
-  • Paragraphe 2 : ce qui la distingue — maturité, polyvalence, parcours atypique comme force. Relier à des exigences secondaires ou "nice to have" de l'offre.
-  • Si une compétence technique est manquante : NE JAMAIS ouvrir par "bien que je n'aie pas" ou "malgré mon manque de". À la place, montrer une compétence adjacente puis enchaîner naturellement : "et je m'engage à maîtriser [outil] dès la prise de poste" — en une seule phrase, pas un paragraphe d'excuse.
+Cross-check against the candidate's profile (portrait, CV, LinkedIn):
+- Which MUST-HAVE technical skills does she cover? → name EACH ONE explicitly in the letter using the EXACT term from the offer (e.g. if offer says "Figma" → write "Figma", not "design tools"; if offer says "CMS platforms" → write "CMS platforms" or the specific one she used)
+- Which MUST-HAVE skills is she missing? → apply gap rule (STEP 2). Mention at most one gap.
+- Which NICE-TO-HAVE does she cover? → mention one if it strengthens the case, skip otherwise.
+- If a required tool appears in the offer but NOT in her profile → it is a gap. Do not invent proficiency she doesn't have.
 
-"conclusion" : 2-3 phrases. Disponibilité, envie d'échanger, ouverture. Pas de formules creuses ("je reste à votre disposition").
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — GAP HANDLING RULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A skill gap = a required tool or technology she hasn't used professionally.
 
-# RÈGLES ABSOLUES
-- INTERDITS : jargon corporate ("expériences visuelles engageantes et impactantes", "storytelling visuel", "contribuer à la création de"), phrases de CV recopiées, formules creuses ("je suis enthousiaste à l'idée de"), adjectifs vides ("significatif", "remarquable").
-- Chaque phrase doit apporter une information nouvelle. Si on peut la supprimer sans rien perdre, elle ne devrait pas être là.
-- VOUVOIEMENT pour la lettre (elle s'adresse au recruteur).
-- Nommer des faits concrets de son parcours, pas des qualités abstraites.
-- Mentionner les éléments de l'offre auxquels elle répond : conditions de travail (remote, international), secteur (fintech, B2B...), outils spécifiques.
-- Si l'offre mentionne un portfolio, la conclusion doit y faire référence.
-- La lettre doit tenir en 250-350 mots maximum. Concise et percutante.
+THE RULE: the gap is NEVER a subject, NEVER a clause that starts a sentence, NEVER a standalone thought. It is fused into the tail of a sentence whose subject is a STRENGTH.
 
-# MOTS-CLÉS
-Extraire 3-5 mots-clés stratégiques de l'offre que la lettre adresse directement. Ces mots-clés doivent être des compétences ou exigences spécifiques, pas des mots génériques.
+Structure: [Concrete strength fact] + [", and I'll get up to speed on [gap] from day one."]
+The gap part must be ≤ 8 words. One gap mention per letter maximum.
 
-FORMAT JSON (strict):
+❌ BANNED patterns — if you write any of these, you have failed:
+  "Although I haven't worked extensively with X..."
+  "While I am prepared to enhance my X skills..."
+  "I am ready to develop my X..."
+  "Bien que je n'aie pas encore X..."
+  "Je suis prête à développer mes compétences en X..."
+  Any sentence where X (the gap) appears before the strength.
+  Any sentence where the gap is the grammatical subject or main clause.
+
+✅ CORRECT pattern — the ONLY acceptable form:
+  EN: "Three years of HTML/CSS work covers your core frontend stack, and I'll get up to speed on JavaScript frameworks from day one."
+  FR: "Trois ans de HTML/CSS couvrent l'essentiel de votre stack, et je suis opérationnelle sur les frameworks JS dès le premier jour."
+
+Test before writing: if you removed the gap clause from the sentence, would the sentence still be a strong claim about her? If yes → correct. If the sentence only exists to talk about the gap → rewrite it.
+
+If there are multiple gaps: mention at most ONE, choose the least critical. Silently omit the others — do not apologize for them.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — WRITE THE LETTER (3 blocks)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"accroche": 2 sentences max. Name the company + role. Show she read the offer by citing ONE specific element (a technology, a mission, a constraint). No generic openers ("I am passionate about...").
+
+"corps": 2 tight paragraphs.
+• P1: her skills that directly match the offer's MUST-HAVE requirements. Name the specific tools/stacks from the offer. Anchor each claim in a concrete fact from her background.
+• P2: what sets her apart. Connect to secondary requirements or nice-to-haves. Apply gap rule here if needed.
+
+"conclusion": 2 sentences. Confirm availability for the specific work setup (on-site city if relevant, remote, timezone). Reference portfolio if the offer asks for one. No filler closing lines.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABSOLUTE PROHIBITIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- BANNED words/phrases: "passionate", "enthusiastic", "dynamic", "storytelling", "impactful", "significant", "remarkable", "I am eager to", "I would be happy to", "je suis enthousiaste", "je reste à votre disposition", "contribuer à"
+- No abstract qualities without a concrete fact behind them
+- No sentence that adds zero information (delete it if removing it changes nothing)
+- French letters: vouvoiement throughout
+- Length: 200–270 words maximum. Every word must earn its place.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT — strict JSON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "accroche": "string",
   "corps": "string",
   "conclusion": "string",
-  "motsCles": ["string"],
+  "motsCles": ["3-5 specific skill/requirement keywords extracted from the offer that the letter addresses"],
   "entreprise": "string",
   "poste": "string",
-  "langue": "fr|en"
+  "langue": "fr|en|other"
 }`,
         },
         {
           role: 'user',
-          content: `${portraitContext}${proContext}${vieContext}\n${offerContext}\n\nGénère la lettre de motivation optimisée en JSON.`,
+          content: `${portraitContext}${proContext}${vieContext}${linkedinContext}${cvContext}\n${offerContext}\n\nFollow the 3-step process. Match the offer language exactly. Output JSON only.`,
         },
       ],
     });
@@ -2026,7 +2101,7 @@ Génère le debrief.`,
     // 1. Fetch candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')
-      .select('entreprise, poste, offre_text')
+      .select('entreprise, poste, offre_text, ressenti_entretien, issue_entretien')
       .eq('id', candidatureId)
       .eq('user_id', userId)
       .single();
@@ -2051,6 +2126,11 @@ Génère le debrief.`,
       ? `\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
       : '';
 
+    const debriefContext =
+      candidature.ressenti_entretien || candidature.issue_entretien
+        ? `\n\n=== DÉBRIEF ENTRETIEN PRÉCÉDENT ===\nRessenti : ${candidature.ressenti_entretien}\nIssue : ${candidature.issue_entretien}\n→ Tiens compte de ce vécu dans tes questions. Si l'entretien était difficile, commence par des questions plus accessibles et monte progressivement. Si le ressenti était mitigé, explore les moments de doute.`
+        : '';
+
     // 3. Generate questions
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o',
@@ -2072,6 +2152,7 @@ Génère exactement 6 questions d'entretien réalistes et progressives, dans l'o
 Les questions doivent être SPÉCIFIQUES à l'offre et au poste — pas génériques.
 ${portraitContext}
 ${offerContext}
+${debriefContext}
 
 Retourne en JSON : { "questions": [{ "text": "string", "hard": boolean }] }`,
         },
@@ -2192,6 +2273,201 @@ Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", 
         {
           role: 'user',
           content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}\n\n${qaText}\n\nÉvalue l'ensemble.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    return JSON.parse(content);
+  }
+
+  // ─── CV Adapté (per candidature, quota-limited) ──────────────
+
+  private async checkAndIncrementCvAdapteQuota(userId: string): Promise<void> {
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('cv_adapte_count_this_week, cv_adapte_week_reset_at, has_paid')
+      .eq('id', userId)
+      .single();
+
+    if (error || !profile) throw new NotFoundException('Profile not found');
+
+    const now = new Date();
+    const resetAt = profile.cv_adapte_week_reset_at
+      ? new Date(profile.cv_adapte_week_reset_at)
+      : null;
+    const weekExpired =
+      !resetAt ||
+      now.getTime() - resetAt.getTime() > 7 * 24 * 60 * 60 * 1000;
+
+    const count = weekExpired ? 0 : (profile.cv_adapte_count_this_week ?? 0);
+    const limit = profile.has_paid ? 5 : 3;
+
+    if (count >= limit) {
+      throw new HttpException(
+        {
+          quota_exceeded: true,
+          limit,
+          reset_at: resetAt?.toISOString() ?? null,
+        },
+        429,
+      );
+    }
+
+    await this.supabase
+      .from('user_profiles')
+      .update({
+        cv_adapte_count_this_week: count + 1,
+        cv_adapte_week_reset_at: weekExpired
+          ? now.toISOString()
+          : profile.cv_adapte_week_reset_at,
+      })
+      .eq('id', userId);
+  }
+
+  async adaptCv(
+    userId: string,
+    offreText: string,
+    poste: string,
+  ): Promise<CvMetierResult> {
+    // 1. Check & increment quota (throws 429 if exceeded)
+    await this.checkAndIncrementCvAdapteQuota(userId);
+
+    // 2. Load cv_base + user name
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('cv_base, diagnostic_vie_data')
+      .eq('id', userId)
+      .single();
+
+    if (profileError || !profile) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    if (!profile.cv_base) {
+      throw new BadRequestException(
+        'cv_base not found — generate base CV first',
+      );
+    }
+
+    const cvBase: CvMetierResult = profile.cv_base;
+    const userName: string = profile.diagnostic_vie_data?.name || '';
+
+    // 3. Adapt cv_base for the specific offer
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.5,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, experte en recrutement. Tu reçois un CV de base ATS-optimisé et une offre d'emploi. Tu adaptes le CV pour cette offre spécifique sans réinventer les faits.
+
+# RÈGLES D'ADAPTATION
+- Reprends les mots-clés EXACTS de l'annonce dans "skills" et "experiences.details".
+- Réordonne "skills" : les compétences demandées par l'offre en premier.
+- Reformule "profile" (accroche) pour répondre directement au besoin de l'offre.
+- Reformule "experiences.details" pour mettre en avant les aspects pertinents à ce poste.
+- NE JAMAIS inventer un fait, un outil, un résultat ou une responsabilité absents du CV de base.
+- Conserve title, company, period EXACTS de chaque expérience.
+- LANGUE : reste dans la langue du CV de base.
+
+FORMAT JSON (identique au CV de base) :
+{
+  "profile": "string",
+  "experiences": [{"title": "string", "company": "string", "period": "string", "details": "string"}],
+  "skills": ["string"],
+  "education": "string"
+}`,
+        },
+        {
+          role: 'user',
+          content: `=== CV DE BASE ===\n${JSON.stringify(cvBase, null, 2)}\n\n=== POSTE VISÉ ===\n${poste}\n\n=== OFFRE D'EMPLOI ===\n${offreText}\n\nAdapte le CV de base pour cette offre.`,
+        },
+      ],
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        userName,
+        profile: parsed.profile || '',
+        experiences: Array.isArray(parsed.experiences)
+          ? parsed.experiences.map((exp: any) => ({
+              title: exp.title || '',
+              company: exp.company || '',
+              period: exp.period || '',
+              details: exp.details || '',
+            }))
+          : [],
+        skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+        education: parsed.education || '',
+      };
+    } catch {
+      throw new Error('Failed to parse OpenAI response');
+    }
+  }
+
+  // ── Proposition d'embauche ───────────────────────────────────────────────
+
+  async generatePropositionEmbaucheHelp(userId: string, candidatureId: string) {
+    // 1. Fetch candidature
+    const { data: candidature, error: candidatureError } = await this.supabase
+      .from('candidatures')
+      .select('entreprise, poste, offre_text, lettre')
+      .eq('id', candidatureId)
+      .eq('user_id', userId)
+      .single();
+
+    if (candidatureError || !candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    // 2. Fetch user portrait
+    const { data: profile } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data')
+      .eq('id', userId)
+      .single();
+
+    const portraitContext =
+      profile?.portrait_data?.portrait
+        ? `\nProfil de la candidate : ${profile.portrait_data.portrait}`
+        : '';
+
+    const offreContext = candidature.offre_text
+      ? `\n\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
+      : '';
+
+    // 3. Call GPT-4o
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA. Une femme vient de recevoir une proposition d'embauche. Aide-la à la comprendre et à décider avec confiance.
+
+Réponds en JSON :
+{
+  "felicitations": "2 phrases max, chaleureuses sans excès",
+  "pointsAVerifier": ["liste de 3 à 5 points clés du contrat à vérifier : salaire, période d'essai, horaires, avantages, date de prise de poste"],
+  "conseilNegociation": "1 court paragraphe : peut-elle négocier ? quoi ? comment l'aborder avec confiance",
+  "questionsPratiques": ["2-3 questions pratiques à poser aux RH avant de signer"]
+}
+
+Contexte : la réponse est en français sauf si le texte de l'offre est dans une autre langue.
+${portraitContext}`,
+        },
+        {
+          role: 'user',
+          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}${offreContext}\n\nAide-la à analyser cette proposition d'embauche.`,
         },
       ],
     });

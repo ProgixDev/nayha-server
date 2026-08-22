@@ -65,6 +65,15 @@ export class AiController {
     );
   }
 
+  @Post('cv-adapte')
+  adaptCv(
+    @CurrentUser() user: AuthUser,
+    @Body('offre_text') offreText: string,
+    @Body('poste') poste: string,
+  ) {
+    return this.aiService.adaptCv(user.id, offreText, poste);
+  }
+
   @Post('cv-metier')
   generateCv(
     @CurrentUser() user: AuthUser,
@@ -167,6 +176,17 @@ export class AiController {
       user.id,
       candidatureId,
       questionsAndAnswers,
+    );
+  }
+
+  @Post('proposition-embauche')
+  generatePropositionEmbaucheHelp(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId: string,
+  ) {
+    return this.aiService.generatePropositionEmbaucheHelp(
+      user.id,
+      candidatureId,
     );
   }
 }
