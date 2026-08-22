@@ -7,6 +7,7 @@ import { FranceTravailModule } from './france-travail/france-travail.module';
 import { AiModule } from './ai/ai.module';
 import { CandidaturesModule } from './candidatures/candidatures.module';
 import { CommunityModule } from './community/community.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -21,5 +22,6 @@ import { CommunityModule } from './community/community.module';
     CandidaturesModule,
     CommunityModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}
