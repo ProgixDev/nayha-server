@@ -1,4 +1,4 @@
-import { IsIn, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class CreatePostDto {
   @IsString()
@@ -8,4 +8,14 @@ export class CreatePostDto {
 
   @IsIn(['normal', 'victoire', 'question', 'temoignage'])
   type: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  auteur?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  initiale?: string;
 }

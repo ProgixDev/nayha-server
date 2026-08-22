@@ -49,14 +49,23 @@ export class CommunityService {
   }
 
   async createPost(userId: string, dto: CreatePostDto) {
-    const { data: profile } = await this.supabase
-      .from('user_profiles')
-      .select('name')
-      .eq('id', userId)
-      .single();
+    // Use client-provided name if available (cached from /users/me in Flutter)
+    // Fall back to DB lookup only when missing
+    let firstName: string;
+    let initiale: string;
 
-    const firstName: string = profile?.name ?? 'Anonyme';
-    const initiale = firstName.charAt(0).toUpperCase() || 'A';
+    if (dto.auteur && dto.auteur.trim().length > 0) {
+      firstName = dto.auteur.trim();
+      initiale = dto.initiale?.trim().charAt(0).toUpperCase() || firstName.charAt(0).toUpperCase() || 'A';
+    } else {
+      const { data: profile } = await this.supabase
+        .from('user_profiles')
+        .select('name')
+        .eq('id', userId)
+        .single();
+      firstName = profile?.name ?? 'Anonyme';
+      initiale = firstName.charAt(0).toUpperCase() || 'A';
+    }
 
     const { data, error } = await this.supabase
       .from('community_posts')
