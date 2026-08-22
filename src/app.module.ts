@@ -6,6 +6,7 @@ import { UsersModule } from './users/users.module';
 import { FranceTravailModule } from './france-travail/france-travail.module';
 import { AiModule } from './ai/ai.module';
 import { CandidaturesModule } from './candidatures/candidatures.module';
+import { CommunityModule } from './community/community.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { CandidaturesModule } from './candidatures/candidatures.module';
     FranceTravailModule,
     AiModule,
     CandidaturesModule,
+    CommunityModule,
   ],
 })
 export class AppModule {}
