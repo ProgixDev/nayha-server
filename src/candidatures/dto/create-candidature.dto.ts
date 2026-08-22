@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsObject, IsOptional, IsString } from 'class-validator';
 
 export class CreateCandidatureDto {
   @IsString()
@@ -16,4 +16,12 @@ export class CreateCandidatureDto {
   @IsOptional()
   @IsNumber()
   delai_reponse_annonce?: number;
+
+  @IsOptional()
+  @IsObject()
+  cv_adapte?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  lettre?: string;
 }

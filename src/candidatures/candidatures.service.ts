@@ -52,6 +52,8 @@ export class CandidaturesService {
         poste: dto.poste,
         offre_text: dto.offre_text ?? null,
         delai_reponse_annonce: dto.delai_reponse_annonce ?? null,
+        cv_adapte: dto.cv_adapte ?? null,
+        lettre: dto.lettre ?? null,
       })
       .select()
       .single();
@@ -86,6 +88,12 @@ export class CandidaturesService {
     }
     if (dto.notes !== undefined) {
       updates.notes = dto.notes;
+    }
+    if (dto.cv_adapte !== undefined) {
+      updates.cv_adapte = dto.cv_adapte;
+    }
+    if (dto.lettre !== undefined) {
+      updates.lettre = dto.lettre;
     }
 
     const { data, error } = await this.supabase
@@ -231,6 +239,21 @@ export class CandidaturesService {
           message:
             "Tu as envoy\u00e9 des candidatures ce mois-ci mais aucune n'a encore d\u00e9bouch\u00e9 sur un entretien. On peut travailler tes candidatures ensemble.",
         });
+      }
+    }
+
+    // 5. lendemainEntretien: entretien date was yesterday (or today), no feedback yet
+    for (const c of all) {
+      if (c.statut === 'entretien' && c.date_entretien && !c.ressenti_entretien) {
+        const dateEntretien = new Date(c.date_entretien);
+        const diffDays = Math.floor((now.getTime() - dateEntretien.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays <= 2) {
+          alertes.push({
+            type: 'lendemainEntretien',
+            message: `Comment s'est pass\u00e9 ton entretien chez ${c.entreprise} ? Dis-nous en un clic.`,
+            candidature_id: c.id,
+          });
+        }
       }
     }
 

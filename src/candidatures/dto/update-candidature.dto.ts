@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsObject, IsOptional, IsString } from 'class-validator';
 
 export class UpdateCandidatureDto {
   @IsOptional()
@@ -20,4 +20,12 @@ export class UpdateCandidatureDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsObject()
+  cv_adapte?: Record<string, any>;
+
+  @IsOptional()
+  @IsString()
+  lettre?: string;
 }
