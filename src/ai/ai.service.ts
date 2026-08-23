@@ -2477,4 +2477,99 @@ ${portraitContext}`,
 
     return JSON.parse(content);
   }
+
+  // ── Parcours après embauche ──────────────────────────────────────────────
+
+  async generateParcoursReussite(userId: string, candidatureId?: string) {
+    const query = this.supabase
+      .from('candidatures')
+      .select('id, entreprise, poste, offre_text, date_envoi, statut')
+      .eq('user_id', userId)
+      .order('date_envoi', { ascending: true });
+    const { data: candidatures, error } = await query;
+    if (error) throw new Error(error.message);
+
+    const all = candidatures || [];
+    const accepted = candidatureId
+      ? all.find((c) => c.id === candidatureId)
+      : [...all].reverse().find((c) => c.statut === 'acceptee');
+    if (!accepted) {
+      throw new NotFoundException('Aucune candidature acceptée trouvée');
+    }
+
+    const stats = {
+      candidatures: all.length,
+      entretiens: all.filter((c) => c.statut === 'entretien' || c.statut === 'acceptee').length,
+      refus: all.filter((c) => c.statut === 'refusee').length,
+    };
+    const firstDate = all[0]?.date_envoi ? new Date(all[0].date_envoi) : new Date();
+    const months = Math.max(1, Math.round((Date.now() - firstDate.getTime()) / (30 * 86400000)));
+
+    const { data: profile } = await this.supabase
+      .from('user_profiles')
+      .select('portrait_data, diagnostic_vie_data, diagnostic_pro_data')
+      .eq('id', userId)
+      .single();
+    const previousPortrait = profile?.portrait_data || {};
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.65,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `Tu es NAYHA. Une femme vient d'accepter un emploi. Célèbre son chemin avec précision, puis aide-la à réussir sa prise de poste.
+Réponds uniquement en JSON avec cette forme :
+{
+  "celebration": "3 à 5 phrases chaleureuses et personnalisées",
+  "portraitUpdate": "un paragraphe de 80 à 120 mots qui ajoute cette réussite à son Portrait de Force",
+  "signature": "une courte phrase qui résume sa force actualisée",
+  "negotiationAdvice": "un court conseil si elle hésite encore ou souhaite négocier",
+  "firstDaysAdvice": "un conseil concret pour sa première semaine"
+}
+Ne fabrique aucun fait absent du contexte. Écris en français et tutoie-la.`,
+        },
+        {
+          role: 'user',
+          content: `Poste accepté : ${accepted.poste} chez ${accepted.entreprise}.
+Statistiques du chemin : ${stats.candidatures} candidatures, ${stats.entretiens} entretiens, ${stats.refus} refus, environ ${months} mois.
+Portrait actuel : ${JSON.stringify(previousPortrait)}
+Diagnostic : ${JSON.stringify({ vie: profile?.diagnostic_vie_data, pro: profile?.diagnostic_pro_data })}`,
+        },
+      ],
+    });
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('OpenAI returned empty response');
+    const generated = JSON.parse(content);
+
+    const updatedPortrait = {
+      ...previousPortrait,
+      portrait: [previousPortrait.portrait, generated.portraitUpdate]
+        .filter(Boolean)
+        .join('\n\n'),
+      signature: generated.signature || previousPortrait.signature,
+      message: 'Portrait mis à jour après une réussite professionnelle.',
+      updatedAt: new Date().toISOString(),
+    };
+    await this.supabase
+      .from('user_profiles')
+      .update({ portrait_data: updatedPortrait })
+      .eq('id', userId);
+
+    return {
+      candidatureId: accepted.id,
+      entreprise: accepted.entreprise,
+      metierTrouve: accepted.poste,
+      candidaturesEnvoyees: stats.candidatures,
+      entretiens: stats.entretiens,
+      refus: stats.refus,
+      dureeRecherche: `${months} mois`,
+      celebration: generated.celebration,
+      portraitUpdate: generated.portraitUpdate,
+      negotiationAdvice: generated.negotiationAdvice,
+      firstDaysAdvice: generated.firstDaysAdvice,
+      portraitUpdated: true,
+    };
+  }
 }

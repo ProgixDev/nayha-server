@@ -189,4 +189,12 @@ export class AiController {
       candidatureId,
     );
   }
+
+  @Post('parcours-reussite')
+  generateParcoursReussite(
+    @CurrentUser() user: AuthUser,
+    @Body('candidatureId') candidatureId?: string,
+  ) {
+    return this.aiService.generateParcoursReussite(user.id, candidatureId);
+  }
 }
