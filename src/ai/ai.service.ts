@@ -597,6 +597,13 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
     granddomaines: string[],
     isAlternative = false,
   ): Promise<PlanActionResult> {
+    const isCompleteDomainChange = this.normalizeText(pro.stayInDomain).includes(
+      'changer complet',
+    );
+    const rankingException = isCompleteDomainChange
+      ? `IMPORTANT : elle a explicitement indiqué vouloir changer complètement de domaine. Dans ce cas, ses expériences et diplômes restent des preuves de compétences transférables, mais ne doivent pas imposer l'ancien secteur. Le métier souhaité, la vision et le nouveau domaine passent avant la continuité avec son ancien parcours.`
+      : `Elle souhaite préserver la continuité de son parcours : son métier souhaité, ses expériences structurées et ses diplômes doivent être fortement privilégiés avant les suggestions plus éloignées.`;
+
     // 1. Fetch métiers with full data
     const { data: metiers, error: metiersError } = await this.supabase
       .from('rome_metiers')
@@ -617,6 +624,7 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
     } else {
       // AI-picked domains — use keyword relevance to narrow pool
       const userKeywords = this.extractKeywords(vie, pro);
+      const targetKeywords = this.extractTargetKeywords(pro);
       const userRiasec = this.extractUserRiasec(vie, pro);
 
       const scored = metiers.map((m) => {
@@ -629,11 +637,19 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
           if (target.includes(kw)) relevance++;
         }
 
+        // An explicit target role is the strongest signal in the diagnostic.
+        // Keep target-aligned ROME métiers in the candidate pool even when the
+        // user's broader answers point toward a different generic domain.
+        let targetRelevance = 0;
+        for (const kw of targetKeywords) {
+          if (target.includes(kw)) targetRelevance += 100;
+        }
+
         let riasecBonus = 0;
         if (userRiasec.includes(m.data.riasecMajeur)) riasecBonus += 0.3;
         if (userRiasec.includes(m.data.riasecMineur)) riasecBonus += 0.2;
 
-        return { ...m, _score: relevance + riasecBonus };
+        return { ...m, _score: targetRelevance + relevance + riasecBonus };
       });
 
       scored.sort((a, b) => b._score - a._score);
@@ -673,6 +689,36 @@ Utilise la DÉFINITION pour comprendre ce que le métier implique concrètement.
 Utilise ACCÈS EMPLOI pour vérifier qu'elle peut y accéder avec son parcours.
 Utilise RIASEC pour vérifier la compatibilité de personnalité (S=Social, I=Investigateur, A=Artiste, R=Réaliste, E=Entreprenant, C=Conventionnel).
 
+# HIÉRARCHIE DES SIGNAUX (respecte cet ordre)
+
+${rankingException}
+
+Si un métier souhaité explicite est renseigné, il constitue l'intention
+principale de la personne. Une piste correspondant directement à ce métier
+doit être classée devant une piste générique ou seulement transférable, sauf
+si elle est éliminée pour une raison concrète d'accès ou de dealbreaker.
+
+1. **MÉTIER SOUHAITÉ EXPLICITE (45%)** — Correspondance sémantique avec le
+   métier demandé, y compris ses synonymes et variantes (par exemple backend,
+   back-end, développeuse backend, API, serveur).
+2. **PARCOURS RÉEL (25%)** — Diplômes, certifications et expériences
+   structurées, avec leurs intitulés, dates, entreprises et missions.
+3. **ASPIRATIONS ET CONDITIONS (20%)** — Vision, journée idéale, énergie,
+   environnement et refus.
+4. **RIASEC ET COMPÉTENCES TRANSFÉRABLES (10%)** — Compatibilité globale.
+
+Toutes les autres réponses du diagnostic doivent aussi être lues et utilisées
+à leur juste niveau : situation actuelle, rôles, réussite cachée, force
+naturelle, défi surmonté, niveau d'études, domaines de formation, souhait de
+rester ou non dans le domaine, énergie, conditions idéales, journée idéale,
+refus et vision. Elles servent à affiner les suggestions, détecter les
+incompatibilités, expliquer le choix et départager des métiers proches, mais
+elles ne doivent pas écraser le métier souhaité explicite.
+
+Quand le métier souhaité est renseigné, au moins une des 3 pistes doit être
+une correspondance directe avec ce métier. Les deux autres peuvent être des
+évolutions proches, mais pas des métiers sans rapport.
+
 # PROCESSUS DE SÉLECTION (suis ces étapes dans l'ordre)
 
 ## ÉTAPE 1 : ÉLIMINATION (dealbreakers)
@@ -684,12 +730,12 @@ Lis la section "CE QUI COMPTE" du profil. Pour CHAQUE métier candidat, vérifie
 Un métier éliminé NE PEUT PAS apparaître dans les 3 résultats.
 
 ## ÉTAPE 2 : CLASSEMENT (parmi les métiers non éliminés)
-Classe les métiers restants selon :
-1. **VISION & ASPIRATIONS** (50%) — Le métier va-t-il VERS ce qu'elle veut devenir ? Sa vision, sa journée idéale, son rêve.
-2. **COMPÉTENCES TRANSFÉRABLES** (50%) — Ses savoir-faire passés sont-ils un pont crédible vers ce métier ? Le métier doit s'appuyer sur son domaine d'expertise, mais représenter une ÉVOLUTION.
+Applique la hiérarchie des signaux ci-dessus. Ne remplace jamais une demande
+explicite par une préférence supposée ou par un métier plus général.
 
 ## ÉTAPE 3 : VÉRIFICATION FINALE
 - Les bifurcations s'appuient sur ses compétences techniques principales ? (pas de métier sans lien avec son expertise)
+- Toutes les réponses du profil ont-elles été considérées, même celles qui ont un poids secondaire ?
 - Les 3 scores sont différenciés ? (pas tous au même niveau)
 - Aucun métier n'est son ancien poste déguisé ?
 - Elle peut réalistement accéder à ce métier ? (vérifie ACCÈS EMPLOI vs son parcours)
@@ -721,7 +767,7 @@ Retourne exactement 3 métiers, triés par matchScore décroissant.`,
 === MÉTIERS DISPONIBLES (CODE|TITRE|DÉFINITION|RIASEC|ACCÈS) ===
 ${enrichedList}
 
-Choisis les 3 métiers les plus adaptés à son profil ET à ses aspirations. Rappel : lis la DÉFINITION de chaque métier, vérifie l'ACCÈS EMPLOI, et regarde sa vision et ses refus AVANT de choisir.`,
+Choisis les 3 métiers les plus adaptés à son profil ET à son métier souhaité explicite. Rappel : lis la DÉFINITION de chaque métier, vérifie l'ACCÈS EMPLOI, et regarde sa vision et ses refus AVANT de choisir.`,
         },
       ],
     });
@@ -804,7 +850,11 @@ Réponds en JSON : { "codes": ["K", "M", "J"] }`,
           role: 'user',
           content: `Profil :
 - Formation : ${this.safe(pro.educationLevel)}, domaines : ${this.safe(pro.educationDomains)}
+- Métier souhaité explicitement : ${pro.knowsTargetJob ? this.safe(pro.targetJob) : 'Pas encore défini'}
 - Expériences : "${this.safe(pro.workExperiences)}"
+- Expériences structurées : "${this.formatStructuredEntries(pro.experienceEntries)}"
+- Diplômes structurés : "${this.formatStructuredEntries(pro.diplomaEntries)}"
+- Orientation de domaine : "${this.safe(pro.stayInDomain)}"
 - Ce qui donne de l'énergie : "${this.safe(pro.energySources)}"
 - Ce qu'elle refuse : "${this.safe(pro.dealbreakers)}"
 - Conditions idéales : ${this.safe(pro.idealConditions)}
@@ -874,7 +924,9 @@ Niveau d'études : ${this.safe(pro.educationLevel)}
 Domaines : ${this.safe(pro.educationDomains)}
 Métier souhaité : ${pro.knowsTargetJob ? this.safe(pro.targetJob) : 'Pas encore défini'}
 Diplômes et certifications : "${this.safe(pro.diplomas)}"
+Diplômes et certifications structurés : "${this.formatStructuredEntries(pro.diplomaEntries)}"
 Expériences : "${this.safe(pro.workExperiences)}"
+Expériences structurées : "${this.formatStructuredEntries(pro.experienceEntries)}"
 Expérience professionnelle : ${pro.hasWorkExperience ? 'Oui' : 'Non'}
 Durée d'expérience : ${this.safe(pro.experienceYears)}
 Souhait de rester dans le domaine : ${this.safe(pro.stayInDomain)}
@@ -1004,13 +1056,22 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
     pro: Record<string, any>,
   ): string[] {
     const userText = [
+      this.safe(pro.targetJob),
       this.safe(pro.workExperiences),
+      this.formatStructuredEntries(pro.experienceEntries),
+      this.formatStructuredEntries(pro.diplomaEntries),
       this.safe(vie.vision),
       this.safe(pro.energySources),
       this.safe(pro.idealDayVision),
+      this.safe(pro.idealConditions),
+      this.safe(pro.dealbreakers),
+      this.safe(pro.stayInDomain),
       this.safe(pro.educationDomains),
+      this.safe(vie.roles),
+      this.safe(vie.situation),
       this.safe(vie.naturalStrength),
       this.safe(vie.hiddenSuccess),
+      this.safe(vie.overcomeChallenge),
     ].join(' ');
 
     return [
@@ -1022,6 +1083,52 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
           .filter((w) => w.length > 3 && !AiService.STOP_WORDS.has(w)),
       ),
     ];
+  }
+
+  private extractTargetKeywords(pro: Record<string, any>): string[] {
+    const target = this.normalizeText(this.safe(pro.targetJob));
+    if (!pro.knowsTargetJob || !target || target === 'non renseigne') return [];
+
+    const words = target
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !AiService.STOP_WORDS.has(word));
+    const aliases = new Set(words);
+
+    if (target.includes('backend') || target.includes('back end')) {
+      ['backend', 'back-end', 'serveur', 'api', 'developpeur'].forEach((word) =>
+        aliases.add(word),
+      );
+    }
+    if (target.includes('frontend') || target.includes('front end')) {
+      ['frontend', 'front-end', 'interface', 'web'].forEach((word) =>
+        aliases.add(word),
+      );
+    }
+
+    return [...aliases];
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private formatStructuredEntries(entries: any): string {
+    if (!Array.isArray(entries) || entries.length === 0) return '';
+    return entries
+      .map((entry) =>
+        Object.entries(entry ?? {})
+          .filter(([, value]) => value != null && String(value).trim() !== '')
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(', '),
+      )
+      .filter(Boolean)
+      .join(' | ');
   }
 
   /**

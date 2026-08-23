@@ -1,4 +1,11 @@
-import { IsArray, IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class SubmitDiagnosticProDto {
   @IsString()
@@ -21,6 +28,11 @@ export class SubmitDiagnosticProDto {
   @IsString()
   diplomas?: string;
 
+  @IsOptional()
+  @IsArray()
+  @IsObject({ each: true })
+  diplomaEntries?: Record<string, any>[];
+
   @IsString()
   workExperiences: string;
 
@@ -31,6 +43,11 @@ export class SubmitDiagnosticProDto {
   @IsOptional()
   @IsString()
   experienceYears?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsObject({ each: true })
+  experienceEntries?: Record<string, any>[];
 
   @IsOptional()
   @IsString()

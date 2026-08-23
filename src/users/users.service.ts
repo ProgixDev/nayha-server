@@ -101,6 +101,8 @@ export class UsersService {
       .update({
         diagnostic_pro_data: diagnosticData,
         diagnostic_pro_completed: true,
+        // Recommendations must be regenerated from the latest diagnostic answers.
+        plan_action_data: null,
       })
       .eq('id', userId)
       .select()
