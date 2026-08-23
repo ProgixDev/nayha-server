@@ -872,7 +872,12 @@ Rôles : ${this.safe(vie.roles)}
 === PARCOURS ===
 Niveau d'études : ${this.safe(pro.educationLevel)}
 Domaines : ${this.safe(pro.educationDomains)}
+Métier souhaité : ${pro.knowsTargetJob ? this.safe(pro.targetJob) : 'Pas encore défini'}
+Diplômes et certifications : "${this.safe(pro.diplomas)}"
 Expériences : "${this.safe(pro.workExperiences)}"
+Expérience professionnelle : ${pro.hasWorkExperience ? 'Oui' : 'Non'}
+Durée d'expérience : ${this.safe(pro.experienceYears)}
+Souhait de rester dans le domaine : ${this.safe(pro.stayInDomain)}
 
 === CE QUI COMPTE ===
 Énergie : "${this.safe(pro.energySources)}"
