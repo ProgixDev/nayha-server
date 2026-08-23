@@ -1577,7 +1577,7 @@ FORMAT JSON (strict):
     // 1. Fetch user profile (portrait + name)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select('portrait_data, diagnostic_vie_data')
+      .select('portrait_data, diagnostic_vie_data, diagnostic_pro_data')
       .eq('id', userId)
       .single();
 
@@ -1586,9 +1586,10 @@ FORMAT JSON (strict):
     }
 
     const userName: string = profile.diagnostic_vie_data?.name || '';
+    const diagnosticPro = profile.diagnostic_pro_data || {};
 
     const portraitContext = profile.portrait_data
-      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}`
+      ? `\n=== TON PORTRAIT DE FORCE (ton socle) ===\nSignature : ${profile.portrait_data.signature}\nSavoir-faire : ${(profile.portrait_data.savoirFaire || []).join(', ')}\nSavoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.portrait_data.savoirFaireTechnique || []).length > 0 ? '\nOutils maîtrisés : ' + profile.portrait_data.savoirFaireTechnique.join(', ') : ''}${(profile.portrait_data.experiences || []).length > 0 ? '\nExpériences reformulées dans le portrait : ' + profile.portrait_data.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}${e.competences?.length ? ' — ' + e.competences.join(', ') : ''}`).join(' | ') : ''}`
       : '';
 
     const contextData = {
@@ -1605,8 +1606,12 @@ FORMAT JSON (strict):
       if (linkedinAPropos) linkedinContext += `\nÀ propos : ${linkedinAPropos}`;
     }
 
-    const targetRoleContext = targetRole
-      ? `\n=== MÉTIER CIBLE ===\n${targetRole}\nAngle le CV vers ce métier : accroche, compétences, reformulations d'expériences.`
+    const effectiveTargetRole = targetRole ||
+      (diagnosticPro.knowsTargetJob ? diagnosticPro.targetJob : '');
+    const diagnosticContext = `\n=== DONNÉES DU DIAGNOSTIC PROFESSIONNEL ===\nNiveau d'études : ${diagnosticPro.educationLevel || ''}\nDomaines de formation : ${(diagnosticPro.educationDomains || []).join(', ')}\nMétier souhaité : ${effectiveTargetRole || 'Non précisé'}\nDiplômes structurés : ${JSON.stringify(diagnosticPro.diplomaEntries || [])}\nExpériences structurées : ${JSON.stringify(diagnosticPro.experienceEntries || [])}\nCompétences décrites : ${diagnosticPro.workExperiences || ''}`;
+
+    const targetRoleContext = effectiveTargetRole
+      ? `\n=== MÉTIER CIBLE ===\n${effectiveTargetRole}\nAngle le CV vers ce métier : accroche, compétences, reformulations d'expériences.`
       : '';
 
     const jobOfferContext = jobOffer
@@ -1656,12 +1661,14 @@ Si un métier cible est fourni, angle TOUT le CV vers ce métier :
 ## "experiences"
 - Liste structurée de TOUTES les expériences fournies.
 - Conserve : entreprise, titre, période EXACTS.
-- "details" : 2-4 phrases par expérience. Reformule en livrables concrets et impact. Angle vers le métier cible.
+- "details" : 3-5 phrases par expérience quand les informations le permettent. Reformule en livrables concrets et impact. Angle vers le métier cible. Ne raccourcis pas une expérience riche en une phrase générique.
 
 ## "skills"
 - CONSERVE TOUTES les compétences fournies par la candidate. C'est critique pour les filtres ATS.
 - Trie par pertinence pour le métier cible (les plus pertinentes en premier).
-- Minimum 10 compétences, maximum 20. Les outils spécifiques (Adobe Photoshop, Figma, etc.) doivent apparaître individuellement, pas regroupés sous "Adobe Creative Suite" seul.
+- Utilise toutes les compétences disponibles, jusqu'à 20. Si moins de 10 compétences sont réellement fournies, conserve-les toutes sans en inventer.
+- Chaque compétence doit être un mot-clé court utilisable dans un CV ATS (idéalement 1 à 5 mots, maximum 42 caractères). Supprime les preuves, explications et parenthèses de la compétence : elles appartiennent aux expériences ou à l'accroche.
+- Les outils spécifiques (Adobe Photoshop, Figma, etc.) doivent apparaître individuellement, pas regroupés sous "Adobe Creative Suite" seul.
 
 ## "education"
 - Texte linéaire multi-lignes. Format : "Diplôme — Établissement (années)". Une ligne par formation.
@@ -1676,7 +1683,7 @@ FORMAT JSON (strict):
         },
         {
           role: 'user',
-          content: `${portraitContext}${linkedinContext}${targetRoleContext}${jobOfferContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère le CV optimisé en JSON.`,
+          content: `${portraitContext}${diagnosticContext}${linkedinContext}${targetRoleContext}${jobOfferContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère un CV complet, détaillé et ATS-friendly en JSON. Reprends toutes les expériences et formations fournies ; ne résume pas le CV à quelques lignes.`,
         },
       ],
     });
