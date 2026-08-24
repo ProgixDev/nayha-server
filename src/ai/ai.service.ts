@@ -77,6 +77,7 @@ export interface AnalyseOffresResult {
   motsCles: string[];
   pointsForts: string[];
   aTravailler: string[];
+  alertes: string[];
   detailParOffre: OffreDetail[];
   recommandation: string; // which offer to prioritize and why
 }
@@ -1015,6 +1016,13 @@ Quels 3 grands domaines ROME correspondent le mieux à ce qu'elle VEUT devenir ?
     return Array.isArray(value) ? value.join(', ') : String(value);
   }
 
+  private fullName(vie: Record<string, any> | null | undefined): string {
+    return [vie?.name, vie?.nom]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
   private buildDiagnosticContext(
     vie: Record<string, any>,
     pro: Record<string, any>,
@@ -1401,6 +1409,7 @@ Donner une analyse de marché honnête et utile : où son profil correspond, où
 - Comparer PRÉCISÉMENT : outils mentionnés vs outils maîtrisés, années d'expérience requises vs réelles, secteur demandé vs secteur vécu, type de contrat, conditions (remote, salaire si mentionné).
 
 # ANALYSE GLOBALE
+- "alertes" : 0 à 3 alertes de qualité des données. Signale clairement toute offre qui ne ressemble pas à une offre d'emploi exploitable (texte trop court, publicité, texte hors sujet, absence de poste identifiable) ou qui est manifestement sans rapport avec le métier visé de la candidate. Ne bloque pas l'analyse : explique ce qui doit être vérifié ou recollé.
 - "scoreGlobal" : expression qualitative — "Forte correspondance", "Correspondance moyenne", "Correspondance partielle".
 - "motsCles" : 5-7 termes métiers exacts qui reviennent le plus dans les offres.
 - "pointsForts" : 3-4 phrases courtes. Chaque point doit nommer le fait de son profil ET l'exigence qu'il couvre. Pas de généralité.
@@ -1420,6 +1429,7 @@ Pour CHAQUE offre, produire un objet avec :
 
 FORMAT JSON:
 {
+  "alertes": ["string"],
   "scoreGlobal": "string",
   "motsCles": ["string"],
   "pointsForts": ["string"],
@@ -1440,7 +1450,7 @@ FORMAT JSON:
         },
         {
           role: 'user',
-          content: `${diagnosticContext}${portraitContext}\n\nVoici les offres que la candidate a ciblées :\n${offersContext}\n\nGénère le rapport d'analyse en JSON.`,
+          content: `${diagnosticContext}${portraitContext}\n\nVoici les offres que la candidate a ciblées :\n${offersContext}\n\nVérifie d'abord que chaque texte est bien une offre d'emploi exploitable et cohérente avec le métier visé. Si ce n'est pas le cas, ajoute une alerte explicite dans "alertes", puis génère quand même le reste du rapport. Génère le rapport d'analyse en JSON.`,
         },
       ],
     });
@@ -1461,6 +1471,7 @@ FORMAT JSON:
         aTravailler: Array.isArray(parsed.aTravailler)
           ? parsed.aTravailler
           : [],
+        alertes: Array.isArray(parsed.alertes) ? parsed.alertes : [],
         detailParOffre: Array.isArray(parsed.detailParOffre)
           ? parsed.detailParOffre
           : [],
@@ -1692,7 +1703,7 @@ FORMAT JSON (strict):
       throw new NotFoundException('Profile not found');
     }
 
-    const userName: string = profile.diagnostic_vie_data?.name || '';
+    const userName = this.fullName(profile.diagnostic_vie_data);
     const diagnosticPro = profile.diagnostic_pro_data || {};
 
     const portraitContext = profile.portrait_data
@@ -2629,7 +2640,7 @@ Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", 
     }
 
     const cvBase: CvMetierResult = profile.cv_base;
-    const userName: string = profile.diagnostic_vie_data?.name || '';
+    const userName = this.fullName(profile.diagnostic_vie_data);
 
     // 3. Adapt cv_base for the specific offer
     const completion = await this.openai.chat.completions.create({
