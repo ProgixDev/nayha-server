@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateCandidatureDto } from './dto/create-candidature.dto';
 import { UpdateCandidatureDto } from './dto/update-candidature.dto';
+import { CandidatureActionDto } from './dto/candidature-action.dto';
 
 export interface CandidatureStats {
   totalEnvoyees: number;
@@ -44,16 +45,23 @@ export class CandidaturesService {
   }
 
   async create(userId: string, dto: CreateCandidatureDto) {
+    const dateEnvoi = new Date();
+    const prochaineRelance = new Date(
+      dateEnvoi.getTime() + 7 * 24 * 60 * 60 * 1000,
+    );
     const { data, error } = await this.supabase
       .from('candidatures')
       .insert({
         user_id: userId,
         entreprise: dto.entreprise,
         poste: dto.poste,
+        lien: dto.lien ?? null,
         offre_text: dto.offre_text ?? null,
         delai_reponse_annonce: dto.delai_reponse_annonce ?? null,
         cv_adapte: dto.cv_adapte ?? null,
         lettre: dto.lettre ?? null,
+        date_envoi: dateEnvoi.toISOString(),
+        prochaine_relance: prochaineRelance.toISOString(),
       })
       .select()
       .single();
@@ -69,6 +77,10 @@ export class CandidaturesService {
     const updates: Record<string, any> = {
       updated_at: new Date().toISOString(),
     };
+
+    if (dto.entreprise !== undefined) updates.entreprise = dto.entreprise;
+    if (dto.poste !== undefined) updates.poste = dto.poste;
+    if (dto.lien !== undefined) updates.lien = dto.lien;
 
     if (dto.statut !== undefined) {
       updates.statut = dto.statut;
@@ -125,6 +137,124 @@ export class CandidaturesService {
     return { deleted: true };
   }
 
+  async recordAction(userId: string, id: string, dto: CandidatureActionDto) {
+    const { data: candidature, error: fetchError } = await this.supabase
+      .from('candidatures')
+      .select('id, statut')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
+    if (fetchError || !candidature) {
+      throw new NotFoundException('Candidature not found');
+    }
+
+    const now = new Date();
+    const updates: Record<string, any> = {
+      updated_at: now.toISOString(),
+    };
+    let newStatus = candidature.statut;
+
+    switch (dto.action) {
+      case 'relance_effectuee':
+        newStatus = 'envoyee';
+        updates.statut = newStatus;
+        updates.relance_envoyee = true;
+        updates.relance_proposee = true;
+        updates.date_derniere_relance = now.toISOString();
+        updates.prochaine_relance = new Date(
+          now.getTime() + 7 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        break;
+      case 'a_relancer':
+        newStatus = 'a_relancer';
+        updates.statut = newStatus;
+        updates.relance_proposee = true;
+        break;
+      case 'entretien':
+        newStatus = 'entretien';
+        updates.statut = newStatus;
+        updates.relance_proposee = false;
+        break;
+      case 'refusee':
+        newStatus = 'refusee';
+        updates.statut = newStatus;
+        updates.relance_proposee = false;
+        break;
+    }
+
+    const { data: updated, error: updateError } = await this.supabase
+      .from('candidatures')
+      .update(updates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (updateError || !updated) {
+      throw new Error(updateError?.message ?? 'Could not update candidature');
+    }
+
+    const { error: actionError } = await this.supabase
+      .from('candidature_actions')
+      .insert({
+        candidature_id: id,
+        user_id: userId,
+        action: dto.action,
+        ancien_statut: candidature.statut,
+        nouveau_statut: newStatus,
+        note: dto.note ?? null,
+      });
+
+    if (actionError) throw new Error(actionError.message);
+    return updated;
+  }
+
+  async exportData(userId: string, days: number) {
+    const safeDays = days === 7 ? 7 : 30;
+    const since = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000);
+    const { data: candidatures, error: candidaturesError } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('date_envoi', since.toISOString())
+      .order('date_envoi', { ascending: false });
+
+    if (candidaturesError) throw new Error(candidaturesError.message);
+    const ids = (candidatures ?? []).map((c) => c.id);
+    let actions: any[] = [];
+    if (ids.length > 0) {
+      const { data, error } = await this.supabase
+        .from('candidature_actions')
+        .select('*')
+        .eq('user_id', userId)
+        .in('candidature_id', ids)
+        .gte('created_at', since.toISOString())
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      actions = data ?? [];
+    }
+
+    return {
+      days: safeDays,
+      since: since.toISOString(),
+      candidatures,
+      actions,
+    };
+  }
+
+  async getLatestBilan(userId: string) {
+    const { data, error } = await this.supabase
+      .from('bilans_mensuels')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
   async getStats(userId: string): Promise<CandidatureStats> {
     const { data, error } = await this.supabase
       .from('candidatures')
@@ -145,12 +275,13 @@ export class CandidaturesService {
         c.statut === 'acceptee',
     ).length;
     const totalSansReponse = all.filter(
-      (c) => c.statut === 'envoyee' || c.statut === 'en_attente',
+      (c) =>
+        c.statut === 'envoyee' ||
+        c.statut === 'en_attente' ||
+        c.statut === 'a_relancer',
     ).length;
     const tauxReponse =
-      totalEnvoyees > 0
-        ? Math.round((totalReponses / totalEnvoyees) * 100)
-        : 0;
+      totalEnvoyees > 0 ? Math.round((totalReponses / totalEnvoyees) * 100) : 0;
 
     return {
       totalEnvoyees,
@@ -178,14 +309,20 @@ export class CandidaturesService {
 
     // 1. relance7jours: candidatures envoyees > 7 days (or delai_reponse_annonce), not yet relance_proposee
     for (const c of all) {
-      if (c.statut === 'envoyee' && !c.relance_proposee) {
+      if (
+        (c.statut === 'envoyee' || c.statut === 'a_relancer') &&
+        !c.relance_proposee
+      ) {
         const dateEnvoi = new Date(c.date_envoi);
         const delaiJours = c.delai_reponse_annonce || 7;
+        const prochaineRelance = c.prochaine_relance
+          ? new Date(c.prochaine_relance)
+          : new Date(dateEnvoi.getTime() + delaiJours * 24 * 60 * 60 * 1000);
         const diffDays = Math.floor(
           (now.getTime() - dateEnvoi.getTime()) / (1000 * 60 * 60 * 24),
         );
 
-        if (diffDays >= delaiJours) {
+        if (now >= prochaineRelance) {
           alertes.push({
             type: 'relance7jours',
             message: `Ta candidature chez ${c.entreprise} (${c.poste}) date de ${diffDays} jours. C'est le bon moment pour relancer.`,
@@ -244,9 +381,15 @@ export class CandidaturesService {
 
     // 5. lendemainEntretien: entretien date was yesterday (or today), no feedback yet
     for (const c of all) {
-      if (c.statut === 'entretien' && c.date_entretien && !c.ressenti_entretien) {
+      if (
+        c.statut === 'entretien' &&
+        c.date_entretien &&
+        !c.ressenti_entretien
+      ) {
         const dateEntretien = new Date(c.date_entretien);
-        const diffDays = Math.floor((now.getTime() - dateEntretien.getTime()) / (1000 * 60 * 60 * 24));
+        const diffDays = Math.floor(
+          (now.getTime() - dateEntretien.getTime()) / (1000 * 60 * 60 * 24),
+        );
         if (diffDays >= 0 && diffDays <= 2) {
           alertes.push({
             type: 'lendemainEntretien',

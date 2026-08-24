@@ -125,8 +125,11 @@ export class AiController {
   }
 
   @Post('bilan-mensuel')
-  generateBilanMensuel(@CurrentUser() user: AuthUser) {
-    return this.aiService.generateBilanMensuel(user.id);
+  generateBilanMensuel(
+    @CurrentUser() user: AuthUser,
+    @Body('days') days?: number,
+  ) {
+    return this.aiService.generateBilanMensuel(user.id, days ?? 30);
   }
 
   @Post('entretien-debrief')

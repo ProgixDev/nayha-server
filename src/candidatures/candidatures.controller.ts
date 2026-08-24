@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
@@ -16,6 +17,7 @@ import {
 import { CandidaturesService } from './candidatures.service';
 import { CreateCandidatureDto } from './dto/create-candidature.dto';
 import { UpdateCandidatureDto } from './dto/update-candidature.dto';
+import { CandidatureActionDto } from './dto/candidature-action.dto';
 
 @Controller('candidatures')
 @UseGuards(SupabaseJwtGuard)
@@ -42,11 +44,21 @@ export class CandidaturesController {
     return this.candidaturesService.getTriggers(user.id);
   }
 
+  @Get('export')
+  exportData(@CurrentUser() user: AuthUser, @Query('days') queryDays?: string) {
+    return this.candidaturesService.exportData(
+      user.id,
+      queryDays ? Number(queryDays) : 30,
+    );
+  }
+
+  @Get('bilan/latest')
+  latestBilan(@CurrentUser() user: AuthUser) {
+    return this.candidaturesService.getLatestBilan(user.id);
+  }
+
   @Get(':id/relances')
-  getRelanceMessages(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-  ) {
+  getRelanceMessages(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.candidaturesService.getRelanceMessages(user.id, id);
   }
 
@@ -57,6 +69,15 @@ export class CandidaturesController {
     @Body() dto: UpdateCandidatureDto,
   ) {
     return this.candidaturesService.update(user.id, id, dto);
+  }
+
+  @Post(':id/actions')
+  recordAction(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: CandidatureActionDto,
+  ) {
+    return this.candidaturesService.recordAction(user.id, id, dto);
   }
 
   @Delete(':id')

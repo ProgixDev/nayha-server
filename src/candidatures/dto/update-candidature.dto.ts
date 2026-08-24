@@ -3,7 +3,25 @@ import { IsObject, IsOptional, IsString } from 'class-validator';
 export class UpdateCandidatureDto {
   @IsOptional()
   @IsString()
-  statut?: 'envoyee' | 'en_attente' | 'entretien' | 'refusee' | 'acceptee';
+  entreprise?: string;
+
+  @IsOptional()
+  @IsString()
+  poste?: string;
+
+  @IsOptional()
+  @IsString()
+  lien?: string;
+
+  @IsOptional()
+  @IsString()
+  statut?:
+    | 'envoyee'
+    | 'en_attente'
+    | 'a_relancer'
+    | 'entretien'
+    | 'refusee'
+    | 'acceptee';
 
   @IsOptional()
   @IsString()

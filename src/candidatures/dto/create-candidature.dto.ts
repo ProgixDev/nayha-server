@@ -1,4 +1,10 @@
-import { IsNotEmpty, IsNumber, IsObject, IsOptional, IsString } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateCandidatureDto {
   @IsString()
@@ -8,6 +14,10 @@ export class CreateCandidatureDto {
   @IsString()
   @IsNotEmpty()
   poste: string;
+
+  @IsOptional()
+  @IsString()
+  lien?: string;
 
   @IsOptional()
   @IsString()

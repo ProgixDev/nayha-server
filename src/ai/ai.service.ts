@@ -311,7 +311,9 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
     }
 
     if (!data) {
-      this.logger.warn(`Profile row not found for authenticated user ${userId}`);
+      this.logger.warn(
+        `Profile row not found for authenticated user ${userId}`,
+      );
       throw new NotFoundException('Profile not found');
     }
 
@@ -621,7 +623,8 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
   ): Promise<PlanActionResult> {
     const domainDirection = this.normalizeText(pro.stayInDomain);
     const isCompleteDomainChange = domainDirection.includes('changer complet');
-    const isNearbyDomainExploration = domainDirection.includes('domaine proche');
+    const isNearbyDomainExploration =
+      domainDirection.includes('domaine proche');
     const wantsDomainContinuity = domainDirection.includes('rester dans');
     const rankingException = isCompleteDomainChange
       ? `IMPORTANT — ORIENTATION DOMAINE : elle a explicitement indiqué vouloir changer complètement de domaine. Ses expériences et diplômes deviennent des compétences transférables, mais ne doivent plus imposer l'ancien secteur. Le métier souhaité, la vision et les nouvelles aspirations passent avant la continuité.`
@@ -1509,7 +1512,11 @@ FORMAT JSON:
 Signature : ${portrait.signature || ''}
 Savoir-faire : ${(portrait.savoirFaire || []).join(', ')}
 Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
-      if (portrait.savoirFaireTechnique && Array.isArray(portrait.savoirFaireTechnique) && portrait.savoirFaireTechnique.length > 0) {
+      if (
+        portrait.savoirFaireTechnique &&
+        Array.isArray(portrait.savoirFaireTechnique) &&
+        portrait.savoirFaireTechnique.length > 0
+      ) {
         portraitContext += `\nOutils maîtrisés : ${portrait.savoirFaireTechnique.join(', ')}`;
       }
       if (portrait.experiences && Array.isArray(portrait.experiences)) {
@@ -1525,9 +1532,10 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
       ? `\n=== ÉLÉMENTS AJOUTÉS PAR L'UTILISATEUR ===\n${JSON.stringify(enrichments, null, 2)}`
       : '';
 
-    const targetRoleContext = targetRole && targetRole.trim()
-      ? `\n=== MÉTIER CIBLE SÉLECTIONNÉ ===\n${targetRole}\nLa candidate a choisi ce métier comme objectif. Le profil LinkedIn doit être orienté vers ce rôle cible tout en restant ancré dans son parcours réel.`
-      : '';
+    const targetRoleContext =
+      targetRole && targetRole.trim()
+        ? `\n=== MÉTIER CIBLE SÉLECTIONNÉ ===\n${targetRole}\nLa candidate a choisi ce métier comme objectif. Le profil LinkedIn doit être orienté vers ce rôle cible tout en restant ancré dans son parcours réel.`
+        : '';
 
     // 2. Call OpenAI
     const completion = await this.openai.chat.completions.create({
@@ -1731,7 +1739,8 @@ FORMAT JSON (strict):
       if (linkedinAPropos) linkedinContext += `\nÀ propos : ${linkedinAPropos}`;
     }
 
-    const effectiveTargetRole = targetRole ||
+    const effectiveTargetRole =
+      targetRole ||
       (diagnosticPro.knowsTargetJob ? diagnosticPro.targetJob : '');
     const diagnosticContext = `\n=== DONNÉES DU DIAGNOSTIC PROFESSIONNEL ===\nNiveau d'études : ${diagnosticPro.educationLevel || ''}\nDomaines de formation : ${(diagnosticPro.educationDomains || []).join(', ')}\nMétier souhaité : ${effectiveTargetRole || 'Non précisé'}\nDiplômes structurés : ${JSON.stringify(diagnosticPro.diplomaEntries || [])}\nExpériences structurées : ${JSON.stringify(diagnosticPro.experienceEntries || [])}\nCompétences décrites : ${diagnosticPro.workExperiences || ''}`;
 
@@ -1858,11 +1867,12 @@ FORMAT JSON (strict):
             company: String(
               experience.company || generated?.company || '',
             ).trim(),
-            period: String(
-              experience.period || generated?.period || '',
-            ).trim(),
+            period: String(experience.period || generated?.period || '').trim(),
             details: String(
-              experience.details || experience.description || generated?.details || '',
+              experience.details ||
+                experience.description ||
+                generated?.details ||
+                '',
             ).trim(),
           };
         })
@@ -1871,16 +1881,17 @@ FORMAT JSON (strict):
       return {
         userName,
         profile: parsed.profile || '',
-        experiences: submittedExperiences.length > 0
-          ? submittedExperiences
-          : Array.isArray(parsed.experiences)
-            ? parsed.experiences.map((exp: any) => ({
-                title: exp.title || '',
-                company: exp.company || '',
-                period: exp.period || '',
-                details: exp.details || '',
-              }))
-            : [],
+        experiences:
+          submittedExperiences.length > 0
+            ? submittedExperiences
+            : Array.isArray(parsed.experiences)
+              ? parsed.experiences.map((exp: any) => ({
+                  title: exp.title || '',
+                  company: exp.company || '',
+                  period: exp.period || '',
+                  details: exp.details || '',
+                }))
+              : [],
         skills: Array.isArray(parsed.skills) ? parsed.skills : [],
         education: submittedEducation || parsed.education || '',
       };
@@ -1919,7 +1930,11 @@ FORMAT JSON (strict):
 Signature : ${portrait.signature || ''}
 Savoir-faire : ${(portrait.savoirFaire || []).join(', ')}
 Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
-      if (portrait.savoirFaireTechnique && Array.isArray(portrait.savoirFaireTechnique) && portrait.savoirFaireTechnique.length > 0) {
+      if (
+        portrait.savoirFaireTechnique &&
+        Array.isArray(portrait.savoirFaireTechnique) &&
+        portrait.savoirFaireTechnique.length > 0
+      ) {
         portraitContext += `\nOutils maîtrisés : ${portrait.savoirFaireTechnique.join(', ')}`;
       }
       if (portrait.experiences && Array.isArray(portrait.experiences)) {
@@ -1931,22 +1946,29 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
     let proContext = '';
     const pro = profile.diagnostic_pro_data;
     if (pro) {
-      if (pro.derniereExperience) proContext += `\nDernière expérience : ${pro.derniereExperience}`;
+      if (pro.derniereExperience)
+        proContext += `\nDernière expérience : ${pro.derniereExperience}`;
       if (pro.secteurVise) proContext += `\nSecteur visé : ${pro.secteurVise}`;
       if (pro.metierCible) proContext += `\nMétier cible : ${pro.metierCible}`;
-      if (pro.formations && Array.isArray(pro.formations)) proContext += `\nFormations : ${pro.formations.join(', ')}`;
-      if (pro.outilsMaitrises && Array.isArray(pro.outilsMaitrises)) proContext += `\nOutils maîtrisés : ${pro.outilsMaitrises.join(', ')}`;
-      if (pro.langues && Array.isArray(pro.langues)) proContext += `\nLangues : ${pro.langues.join(', ')}`;
-      if (proContext) proContext = `\n=== PARCOURS PROFESSIONNEL ===${proContext}`;
+      if (pro.formations && Array.isArray(pro.formations))
+        proContext += `\nFormations : ${pro.formations.join(', ')}`;
+      if (pro.outilsMaitrises && Array.isArray(pro.outilsMaitrises))
+        proContext += `\nOutils maîtrisés : ${pro.outilsMaitrises.join(', ')}`;
+      if (pro.langues && Array.isArray(pro.langues))
+        proContext += `\nLangues : ${pro.langues.join(', ')}`;
+      if (proContext)
+        proContext = `\n=== PARCOURS PROFESSIONNEL ===${proContext}`;
     }
 
     // Life context — availability, constraints
     let vieContext = '';
     const vie = profile.diagnostic_vie_data;
     if (vie) {
-      if (vie.disponibilite) vieContext += `\nDisponibilité : ${vie.disponibilite}`;
+      if (vie.disponibilite)
+        vieContext += `\nDisponibilité : ${vie.disponibilite}`;
       if (vie.mobilite) vieContext += `\nMobilité : ${vie.mobilite}`;
-      if (vie.tempsDepuisDernierEmploi) vieContext += `\nDurée depuis dernier emploi : ${vie.tempsDepuisDernierEmploi}`;
+      if (vie.tempsDepuisDernierEmploi)
+        vieContext += `\nDurée depuis dernier emploi : ${vie.tempsDepuisDernierEmploi}`;
       if (vieContext) vieContext = `\n=== SITUATION ACTUELLE ===${vieContext}`;
     }
 
@@ -1954,20 +1976,35 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
     let linkedinContext = '';
     const li = profile.linkedin_profil;
     if (li) {
-      if (li.nouveauTitre) linkedinContext += `\nTitre LinkedIn optimisé : ${li.nouveauTitre}`;
+      if (li.nouveauTitre)
+        linkedinContext += `\nTitre LinkedIn optimisé : ${li.nouveauTitre}`;
       if (li.aPropos) linkedinContext += `\nÀ propos LinkedIn : ${li.aPropos}`;
-      if (li.competences && Array.isArray(li.competences) && li.competences.length > 0) {
+      if (
+        li.competences &&
+        Array.isArray(li.competences) &&
+        li.competences.length > 0
+      ) {
         linkedinContext += `\nCompétences clés identifiées : ${li.competences.join(', ')}`;
       }
-      if (linkedinContext) linkedinContext = `\n=== PROFIL LINKEDIN OPTIMISÉ ===${linkedinContext}`;
+      if (linkedinContext)
+        linkedinContext = `\n=== PROFIL LINKEDIN OPTIMISÉ ===${linkedinContext}`;
     }
 
     // CV context — structured experiences and skills
     let cvContext = '';
     const cv = profile.cv_base;
     if (cv) {
-      if (cv.experiences && Array.isArray(cv.experiences) && cv.experiences.length > 0) {
-        const expLines = cv.experiences.map((e: any) => `${e.title}${e.company ? ' — ' + e.company : ''}${e.period ? ' (' + e.period + ')' : ''}${e.details ? ': ' + e.details : ''}`).join('\n');
+      if (
+        cv.experiences &&
+        Array.isArray(cv.experiences) &&
+        cv.experiences.length > 0
+      ) {
+        const expLines = cv.experiences
+          .map(
+            (e: any) =>
+              `${e.title}${e.company ? ' — ' + e.company : ''}${e.period ? ' (' + e.period + ')' : ''}${e.details ? ': ' + e.details : ''}`,
+          )
+          .join('\n');
         cvContext += `\nExpériences CV :\n${expLines}`;
       }
       if (cv.skills && Array.isArray(cv.skills) && cv.skills.length > 0) {
@@ -2218,19 +2255,21 @@ Génère les deux messages de relance.`,
 
   // ─── Bilan Mensuel ───────────────────────────────────────────
 
-  async generateBilanMensuel(userId: string) {
+  async generateBilanMensuel(userId: string, days = 30) {
     const now = new Date();
     const mois = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const periodDays = Math.max(1, Math.min(days, 90));
+    const startOfPeriod = new Date(
+      now.getTime() - periodDays * 24 * 60 * 60 * 1000,
+    );
 
-    // 1. Fetch all candidatures for current month
+    // 1. Fetch all candidatures for the requested rolling period
     const { data: candidatures, error } = await this.supabase
       .from('candidatures')
       .select('*')
       .eq('user_id', userId)
-      .gte('date_envoi', startOfMonth.toISOString())
-      .lte('date_envoi', endOfMonth.toISOString());
+      .gte('date_envoi', startOfPeriod.toISOString())
+      .lte('date_envoi', now.toISOString());
 
     if (error) {
       throw new Error(error.message);
@@ -2249,9 +2288,7 @@ Génère les deux messages de relance.`,
     ).length;
     const totalRefusees = all.filter((c) => c.statut === 'refusee').length;
     const tauxReponse =
-      totalEnvoyees > 0
-        ? Math.round((totalReponses / totalEnvoyees) * 100)
-        : 0;
+      totalEnvoyees > 0 ? Math.round((totalReponses / totalEnvoyees) * 100) : 0;
 
     // Gather entreprises for context
     const entreprises = all.map((c) => `${c.poste} chez ${c.entreprise}`);
@@ -2274,7 +2311,7 @@ Retourne en JSON : { "analyse": "...", "strategie": "..." }`,
         },
         {
           role: 'user',
-          content: `Mois : ${mois}
+          content: `Période : ${periodDays} derniers jours (jusqu'au ${now.toISOString().slice(0, 10)})
 Candidatures envoyées : ${totalEnvoyees}
 Entretiens obtenus : ${totalEntretiens}
 Réponses reçues : ${totalReponses}
@@ -2395,7 +2432,9 @@ Génère le debrief.`,
     // 1. Fetch candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')
-      .select('entreprise, poste, offre_text, ressenti_entretien, issue_entretien')
+      .select(
+        'entreprise, poste, offre_text, ressenti_entretien, issue_entretien',
+      )
       .eq('id', candidatureId)
       .eq('user_id', userId)
       .single();
@@ -2411,10 +2450,9 @@ Génère le debrief.`,
       .eq('id', userId)
       .single();
 
-    const portraitContext =
-      profile?.portrait_data?.portrait
-        ? `\nSon portrait de force : ${profile.portrait_data.portrait}`
-        : '';
+    const portraitContext = profile?.portrait_data?.portrait
+      ? `\nSon portrait de force : ${profile.portrait_data.portrait}`
+      : '';
 
     const offerContext = candidature.offre_text
       ? `\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
@@ -2539,10 +2577,7 @@ Retourne en JSON : { "fort": "string", "ameliorer": "string", "reformulation": "
 
     // 2. Format Q&A
     const qaText = questionsAndAnswers
-      .map(
-        (qa, i) =>
-          `Q${i + 1}: ${qa.question}\nR${i + 1}: ${qa.answer}`,
-      )
+      .map((qa, i) => `Q${i + 1}: ${qa.question}\nR${i + 1}: ${qa.answer}`)
       .join('\n\n');
 
     // 3. Generate score
@@ -2593,8 +2628,7 @@ Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", 
       ? new Date(profile.cv_adapte_week_reset_at)
       : null;
     const weekExpired =
-      !resetAt ||
-      now.getTime() - resetAt.getTime() > 7 * 24 * 60 * 60 * 1000;
+      !resetAt || now.getTime() - resetAt.getTime() > 7 * 24 * 60 * 60 * 1000;
 
     const count = weekExpired ? 0 : (profile.cv_adapte_count_this_week ?? 0);
     const limit = profile.has_paid ? 5 : 3;
@@ -2729,10 +2763,9 @@ FORMAT JSON (identique au CV de base) :
       .eq('id', userId)
       .single();
 
-    const portraitContext =
-      profile?.portrait_data?.portrait
-        ? `\nProfil de la candidate : ${profile.portrait_data.portrait}`
-        : '';
+    const portraitContext = profile?.portrait_data?.portrait
+      ? `\nProfil de la candidate : ${profile.portrait_data.portrait}`
+      : '';
 
     const offreContext = candidature.offre_text
       ? `\n\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
@@ -2793,11 +2826,18 @@ ${portraitContext}`,
 
     const stats = {
       candidatures: all.length,
-      entretiens: all.filter((c) => c.statut === 'entretien' || c.statut === 'acceptee').length,
+      entretiens: all.filter(
+        (c) => c.statut === 'entretien' || c.statut === 'acceptee',
+      ).length,
       refus: all.filter((c) => c.statut === 'refusee').length,
     };
-    const firstDate = all[0]?.date_envoi ? new Date(all[0].date_envoi) : new Date();
-    const months = Math.max(1, Math.round((Date.now() - firstDate.getTime()) / (30 * 86400000)));
+    const firstDate = all[0]?.date_envoi
+      ? new Date(all[0].date_envoi)
+      : new Date();
+    const months = Math.max(
+      1,
+      Math.round((Date.now() - firstDate.getTime()) / (30 * 86400000)),
+    );
 
     const { data: profile } = await this.supabase
       .from('user_profiles')
