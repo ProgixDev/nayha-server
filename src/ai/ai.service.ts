@@ -597,12 +597,17 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
     granddomaines: string[],
     isAlternative = false,
   ): Promise<PlanActionResult> {
-    const isCompleteDomainChange = this.normalizeText(pro.stayInDomain).includes(
-      'changer complet',
-    );
+    const domainDirection = this.normalizeText(pro.stayInDomain);
+    const isCompleteDomainChange = domainDirection.includes('changer complet');
+    const isNearbyDomainExploration = domainDirection.includes('domaine proche');
+    const wantsDomainContinuity = domainDirection.includes('rester dans');
     const rankingException = isCompleteDomainChange
-      ? `IMPORTANT : elle a explicitement indiqué vouloir changer complètement de domaine. Dans ce cas, ses expériences et diplômes restent des preuves de compétences transférables, mais ne doivent pas imposer l'ancien secteur. Le métier souhaité, la vision et le nouveau domaine passent avant la continuité avec son ancien parcours.`
-      : `Elle souhaite préserver la continuité de son parcours : son métier souhaité, ses expériences structurées et ses diplômes doivent être fortement privilégiés avant les suggestions plus éloignées.`;
+      ? `IMPORTANT — ORIENTATION DOMAINE : elle a explicitement indiqué vouloir changer complètement de domaine. Ses expériences et diplômes deviennent des compétences transférables, mais ne doivent plus imposer l'ancien secteur. Le métier souhaité, la vision et les nouvelles aspirations passent avant la continuité.`
+      : isNearbyDomainExploration
+        ? `IMPORTANT — ORIENTATION DOMAINE : elle veut explorer un domaine proche. Les 3 métiers doivent rester reliés à son domaine, ses expériences et ses diplômes, tout en ouvrant une évolution réaliste vers un secteur adjacent. Interdis les reconversions sans lien.`
+        : wantsDomainContinuity
+          ? `IMPORTANT — ORIENTATION DOMAINE : elle veut rester dans son domaine. Cette réponse est une contrainte prioritaire : les 3 métiers doivent préserver la continuité avec son domaine, ses expériences et ses diplômes. Un métier d'un autre secteur ne peut apparaître que s'il est clairement la même spécialité ou une évolution directe.`
+          : `IMPORTANT — ORIENTATION DOMAINE : elle n'a pas encore tranché. Utilise son parcours et ses aspirations pour proposer des métiers cohérents, sans forcer une reconversion complète.`;
 
     // 1. Fetch métiers with full data
     const { data: metiers, error: metiersError } = await this.supabase
@@ -656,6 +661,30 @@ Formacodes : ${(metier.formacodes || []).map((f: any) => f.libelle || f).join(',
       candidates = scored.slice(0, 50);
     }
 
+    // When the user named a job, narrow the AI's choice to that professional
+    // family. The three suggestions must be close variants, not three generic
+    // métiers that merely match the broader diagnostic.
+    const targetKeywords = this.extractTargetKeywords(pro);
+    if (targetKeywords.length > 0 && candidates.length >= 3) {
+      const targetRelevance = (candidate: (typeof candidates)[number]) => {
+        const title = this.normalizeText(candidate.data.libelle || '');
+        const definition = this.normalizeText(candidate.data.definition || '');
+        return targetKeywords.reduce(
+          (score, keyword) =>
+            score +
+            (title.includes(keyword) ? 100 : 0) +
+            (definition.includes(keyword) ? 1 : 0),
+          0,
+        );
+      };
+      const closeCandidates = [...candidates]
+        .sort((a, b) => targetRelevance(b) - targetRelevance(a))
+        .filter((candidate) => targetRelevance(candidate) > 0);
+      if (closeCandidates.length >= 3) {
+        candidates = closeCandidates.slice(0, 50);
+      }
+    }
+
     // 3. Build enriched list for GPT
     const enrichedList = candidates
       .map((m) => {
@@ -693,19 +722,32 @@ Utilise RIASEC pour vérifier la compatibilité de personnalité (S=Social, I=In
 
 ${rankingException}
 
+La réponse à « veux-tu rester dans ce domaine ? » est l'une des informations
+les plus importantes du diagnostic. Elle détermine la largeur de recherche :
+continuité stricte, domaine adjacent, ou changement complet. Ne la traite
+jamais comme une préférence mineure et ne propose pas trois métiers qui
+contredisent cette réponse.
+
 Si un métier souhaité explicite est renseigné, il constitue l'intention
 principale de la personne. Une piste correspondant directement à ce métier
 doit être classée devant une piste générique ou seulement transférable, sauf
 si elle est éliminée pour une raison concrète d'accès ou de dealbreaker.
+Le titre affiché doit reprendre le métier souhaité lorsqu'il existe dans la
+liste. S'il n'existe pas exactement, choisis le libellé ROME le plus proche
+sémantiquement (même spécialité, secteur et niveau) plutôt qu'un métier
+générique ou sans rapport.
+Si aucun métier n'est encore clairement exprimé, déduis un métier précis à
+partir de l'ensemble du diagnostic et choisis le libellé ROME le plus proche.
 
-1. **MÉTIER SOUHAITÉ EXPLICITE (45%)** — Correspondance sémantique avec le
+1. **ORIENTATION DE DOMAINE (35%)** — Respect strict de la réponse rester / domaine proche / changement complet.
+2. **MÉTIER SOUHAITÉ EXPLICITE (35%)** — Correspondance sémantique avec le
    métier demandé, y compris ses synonymes et variantes (par exemple backend,
    back-end, développeuse backend, API, serveur).
-2. **PARCOURS RÉEL (25%)** — Diplômes, certifications et expériences
+3. **PARCOURS RÉEL (20%)** — Diplômes, certifications et expériences
    structurées, avec leurs intitulés, dates, entreprises et missions.
-3. **ASPIRATIONS ET CONDITIONS (20%)** — Vision, journée idéale, énergie,
+4. **ASPIRATIONS ET CONDITIONS (10%)** — Vision, journée idéale, énergie,
    environnement et refus.
-4. **RIASEC ET COMPÉTENCES TRANSFÉRABLES (10%)** — Compatibilité globale.
+5. **RIASEC ET COMPÉTENCES TRANSFÉRABLES (5%)** — Compatibilité globale.
 
 Toutes les autres réponses du diagnostic doivent aussi être lues et utilisées
 à leur juste niveau : situation actuelle, rôles, réussite cachée, force
@@ -716,8 +758,11 @@ incompatibilités, expliquer le choix et départager des métiers proches, mais
 elles ne doivent pas écraser le métier souhaité explicite.
 
 Quand le métier souhaité est renseigné, au moins une des 3 pistes doit être
-une correspondance directe avec ce métier. Les deux autres peuvent être des
-évolutions proches, mais pas des métiers sans rapport.
+une correspondance directe avec ce métier. Les trois pistes doivent rester
+dans la même famille professionnelle ou être des variantes très proches du
+métier demandé. Ne remplis jamais les deuxième et troisième places avec des
+métiers génériques ou éloignés simplement parce qu'ils correspondent à des
+réponses secondaires.
 
 # PROCESSUS DE SÉLECTION (suis ces étapes dans l'ordre)
 
@@ -767,7 +812,7 @@ Retourne exactement 3 métiers, triés par matchScore décroissant.`,
 === MÉTIERS DISPONIBLES (CODE|TITRE|DÉFINITION|RIASEC|ACCÈS) ===
 ${enrichedList}
 
-Choisis les 3 métiers les plus adaptés à son profil ET à son métier souhaité explicite. Rappel : lis la DÉFINITION de chaque métier, vérifie l'ACCÈS EMPLOI, et regarde sa vision et ses refus AVANT de choisir.`,
+Choisis les 3 métiers les plus adaptés à son profil, en respectant d'abord son orientation de domaine puis son métier souhaité explicite. Si un métier est indiqué, les trois titres doivent être ce métier ou des libellés ROME très proches de la même famille. Le premier titre doit être ce métier ou le libellé ROME le plus proche disponible. Rappel : lis la DÉFINITION de chaque métier, vérifie l'ACCÈS EMPLOI, et regarde sa vision et ses refus AVANT de choisir.`,
         },
       ],
     });
@@ -802,6 +847,35 @@ Choisis les 3 métiers les plus adaptés à son profil ET à son métier souhait
       throw new Error('OpenAI returned no valid ROME codes');
     }
 
+    // Keep the user's desired job visible as the first recommendation whenever
+    // GPT returned a semantically close valid métier. This prevents a generic
+    // suggestion from replacing an explicit target such as "backend engineer".
+    if (targetKeywords.length > 0) {
+      const targetText = this.normalizeText(this.safe(pro.targetJob));
+      const targetRank = (metier: PlanActionMetier) => {
+        const title = this.normalizeText(metier.title);
+        let score = targetText && title.includes(targetText) ? 1000 : 0;
+        for (const keyword of targetKeywords) {
+          if (title.includes(keyword)) score += 100;
+        }
+        return score;
+      };
+      const closest = [...validatedMetiers].sort(
+        (a, b) => targetRank(b) - targetRank(a),
+      )[0];
+      if (closest && targetRank(closest) > 0) {
+        const remaining = validatedMetiers.filter(
+          (metier) => metier.code !== closest.code,
+        );
+        validatedMetiers.splice(
+          0,
+          validatedMetiers.length,
+          closest,
+          ...remaining,
+        );
+      }
+    }
+
     const result: PlanActionResult = {
       metiers: validatedMetiers,
       generatedAt: new Date().toISOString(),
@@ -824,6 +898,10 @@ Choisis les 3 métiers les plus adaptés à son profil ET à son métier souhait
           content: `Tu es un expert en orientation professionnelle. Analyse le profil et sélectionne les 3 grands domaines ROME les plus pertinents.
 
 # IMPORTANT
+- La réponse à « veux-tu rester dans ce domaine ? » est une contrainte de
+  sélection prioritaire : rester = domaines cohérents avec le parcours,
+  domaine proche = domaines adjacents, changement complet = nouvelles
+  aspirations prioritaires.
 - Choisis les domaines en fonction de ce qu'elle VEUT DEVENIR, pas seulement de ce qu'elle a fait.
 - Si elle a quitté un secteur (burnout, démission), ne choisis pas uniquement ce même secteur. Inclus au moins un domaine qui correspond à sa VISION ou à ses aspirations nouvelles.
 - Prends en compte ses dealbreakers pour éviter les domaines incompatibles.
@@ -1671,7 +1749,9 @@ Si un métier cible est fourni, angle TOUT le CV vers ce métier :
 - Les outils spécifiques (Adobe Photoshop, Figma, etc.) doivent apparaître individuellement, pas regroupés sous "Adobe Creative Suite" seul.
 
 ## "education"
-- Texte linéaire multi-lignes. Format : "Diplôme — Établissement (années)". Une ligne par formation.
+- Texte linéaire multi-lignes, une ligne par formation.
+- Reprends TOUTES les formations fournies, avec l'intitulé, l'établissement, les dates et les détails/description saisis.
+- Ne déplace jamais une formation dans "experiences" et n'invente aucune formation.
 
 FORMAT JSON (strict):
 {
@@ -1695,19 +1775,66 @@ FORMAT JSON (strict):
 
     try {
       const parsed = JSON.parse(content);
+      const submittedEducation = (formations || [])
+        .map((formation: any) => {
+          if (typeof formation === 'string') return formation.trim();
+          if (!formation || typeof formation !== 'object') return '';
+          return [
+            formation.intitule || formation.title || '',
+            formation.organisme || formation.institution || '',
+            formation.annee || formation.period || '',
+            formation.description || formation.details || '',
+          ]
+            .map((value) => String(value).trim())
+            .filter(Boolean)
+            .join(' · ');
+        })
+        .filter(Boolean)
+        .join('\n');
+
+      // The experiences entered in the Diagnostic Pro are mandatory source
+      // data for the base CV. Keep their title, company and period exactly;
+      // GPT may only provide richer details when the user left them empty.
+      const submittedExperiences = (experiences || [])
+        .map((experience: any, index: number) => {
+          if (!experience || typeof experience !== 'object') return null;
+          const generated = Array.isArray(parsed.experiences)
+            ? parsed.experiences[index]
+            : null;
+          const title = String(
+            experience.title || experience.jobTitle || generated?.title || '',
+          ).trim();
+          if (!title) return null;
+          return {
+            title,
+            company: String(
+              experience.company || generated?.company || '',
+            ).trim(),
+            period: String(
+              experience.period || generated?.period || '',
+            ).trim(),
+            details: String(
+              experience.details || experience.description || generated?.details || '',
+            ).trim(),
+          };
+        })
+        .filter(Boolean);
+
       return {
         userName,
         profile: parsed.profile || '',
-        experiences: Array.isArray(parsed.experiences)
-          ? parsed.experiences.map((exp: any) => ({
-              title: exp.title || '',
-              company: exp.company || '',
-              period: exp.period || '',
-              details: exp.details || '',
-            }))
-          : [],
+        experiences: submittedExperiences.length > 0
+          ? submittedExperiences
+          : Array.isArray(parsed.experiences)
+            ? parsed.experiences.map((exp: any) => ({
+                title: exp.title || '',
+                company: exp.company || '',
+                period: exp.period || '',
+                details: exp.details || '',
+              }))
+            : [],
         skills: Array.isArray(parsed.skills) ? parsed.skills : [],
-        education: parsed.education || '',
+        education: submittedEducation || parsed.education || '',
       };
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
