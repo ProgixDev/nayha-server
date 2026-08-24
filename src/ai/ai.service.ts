@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   HttpException,
+  InternalServerErrorException,
+  Logger,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -135,6 +137,7 @@ const ROME_GRANDDOMAINE_CODES = new Set([
 
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
   private supabase: SupabaseClient;
   private openai: OpenAI;
 
@@ -151,15 +154,10 @@ export class AiService {
 
   async generatePortrait(userId: string): Promise<PortraitDeForce> {
     // 1. Fetch diagnostic data
-    const { data: profile, error } = await this.supabase
-      .from('user_profiles')
-      .select('diagnostic_vie_data, diagnostic_pro_data')
-      .eq('id', userId)
-      .single();
-
-    if (error || !profile) {
-      throw new NotFoundException('Profile not found');
-    }
+    const profile = await this.loadProfileForAi(
+      userId,
+      'diagnostic_vie_data, diagnostic_pro_data',
+    );
 
     const { diagnostic_vie_data: vie, diagnostic_pro_data: pro } = profile;
 
@@ -263,13 +261,10 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
     requestedGranddomaines?: string[],
   ): Promise<PlanActionResult> {
     // 1. Fetch diagnostic data
-    const { data: profile, error } = await this.supabase
-      .from('user_profiles')
-      .select('diagnostic_vie_data, diagnostic_pro_data')
-      .eq('id', userId)
-      .single();
-
-    if (error || !profile) throw new NotFoundException('Profile not found');
+    const profile = await this.loadProfileForAi(
+      userId,
+      'diagnostic_vie_data, diagnostic_pro_data',
+    );
 
     const { diagnostic_vie_data: vie, diagnostic_pro_data: pro } = profile;
     if (!vie || !pro) throw new NotFoundException('Diagnostics not completed');
@@ -294,6 +289,32 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
     }
 
     return result;
+  }
+
+  private async loadProfileForAi(
+    userId: string,
+    columns: string,
+  ): Promise<Record<string, any>> {
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .select(columns)
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      this.logger.error(
+        `Profile query failed for user ${userId}: ${error.message}`,
+        error.code,
+      );
+      throw new InternalServerErrorException('Profile query failed');
+    }
+
+    if (!data) {
+      this.logger.warn(`Profile row not found for authenticated user ${userId}`);
+      throw new NotFoundException('Profile not found');
+    }
+
+    return data;
   }
 
   async getPlanAction(userId: string): Promise<PlanActionResult | null> {

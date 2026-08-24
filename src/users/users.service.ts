@@ -1,9 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
   private supabase: SupabaseClient;
 
   constructor(private configService: ConfigService) {
@@ -21,7 +27,15 @@ export class UsersService {
       .eq('id', userId)
       .single();
 
-    if (error || !data) {
+    if (error && error.code !== 'PGRST116') {
+      this.logger.error(
+        `Profile lookup failed for user ${userId}: ${error.message}`,
+        error.code,
+      );
+      throw new InternalServerErrorException('Profile lookup failed');
+    }
+
+    if (!data) {
       // Auto-create profile for new users
       const { data: newProfile, error: insertError } = await this.supabase
         .from('user_profiles')
@@ -37,7 +51,11 @@ export class UsersService {
         .single();
 
       if (insertError || !newProfile) {
-        throw new NotFoundException('Could not create profile');
+        this.logger.error(
+          `Profile creation failed for user ${userId}: ${insertError?.message ?? 'no profile returned'}`,
+          insertError?.code,
+        );
+        throw new InternalServerErrorException('Could not create profile');
       }
 
       return newProfile;
@@ -77,7 +95,10 @@ export class UsersService {
     return data;
   }
 
-  async submitDiagnosticVie(userId: string, diagnosticData: Record<string, any>) {
+  async submitDiagnosticVie(
+    userId: string,
+    diagnosticData: Record<string, any>,
+  ) {
     const { data, error } = await this.supabase
       .from('user_profiles')
       .update({
@@ -95,7 +116,10 @@ export class UsersService {
     return data;
   }
 
-  async submitDiagnosticPro(userId: string, diagnosticData: Record<string, any>) {
+  async submitDiagnosticPro(
+    userId: string,
+    diagnosticData: Record<string, any>,
+  ) {
     const { data, error } = await this.supabase
       .from('user_profiles')
       .update({
