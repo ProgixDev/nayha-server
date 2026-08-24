@@ -1758,9 +1758,10 @@ Si un métier cible est fourni, angle TOUT le CV vers ce métier :
 - PAS de nom, PAS de "je suis passionné(e)".
 
 ## "experiences"
-- Liste structurée de TOUTES les expériences fournies.
+- Liste structurée de TOUTES les expériences fournies, sans exception et dans le même ordre.
 - Conserve : entreprise, titre, période EXACTS.
-- "details" : 3-5 phrases par expérience quand les informations le permettent. Reformule en livrables concrets et impact. Angle vers le métier cible. Ne raccourcis pas une expérience riche en une phrase générique.
+- "details" : produis 2-4 phrases concrètes par expérience, ou 2-4 propositions séparées par " • ". Utilise les informations de l'expérience, du diagnostic professionnel et du portrait pour expliciter les missions, méthodes, outils et compétences réellement déductibles. Même lorsqu'une expérience est peu renseignée, donne une description utile à partir des faits disponibles ; ne la laisse jamais avec une simple formule générique.
+- N'invente aucun résultat, outil ou responsabilité. Si les informations sont limitées, reste factuel mais développe le contexte, les activités et les compétences transférables que les données permettent d'établir.
 
 ## "skills"
 - CONSERVE TOUTES les compétences fournies par la candidate. C'est critique pour les filtres ATS.
