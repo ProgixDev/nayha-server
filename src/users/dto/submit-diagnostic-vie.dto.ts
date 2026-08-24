@@ -1,4 +1,10 @@
-import { IsArray, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class SubmitDiagnosticVieDto {
   @IsString()
@@ -24,6 +30,10 @@ export class SubmitDiagnosticVieDto {
   @IsArray()
   @IsString({ each: true })
   roles: string[];
+
+  @IsOptional()
+  @IsObject()
+  rolePeriods?: Record<string, string>;
 
   @IsString()
   hiddenSuccess: string;

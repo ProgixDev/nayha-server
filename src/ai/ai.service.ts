@@ -219,7 +219,7 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
 
   "savoirFaireTechnique": "Liste des outils et logiciels déduits de ses expériences. Uniquement ceux qu'on peut raisonnablement déduire. Par exemple : si elle a fait de la retouche photo en agence, elle connaît Photoshop. Si elle a fait du packaging, elle connaît InDesign. Format : ['Photoshop', 'Illustrator', 'InDesign']. Si aucun outil n'est déductible, liste vide.",
 
-  "experiences": "Liste structurée de ses expériences extraites du diagnostic. Pour chaque expérience : { 'titre': 'intitulé court', 'duree': 'durée si mentionnée', 'contexte': 'type de structure', 'competences': ['compétences acquises'] }. Inclure TOUTES les expériences mentionnées, y compris les jobs étudiants et le bénévolat.",
+  "experiences": "Liste structurée de ses expériences extraites du diagnostic. Pour chaque expérience : { 'titre': 'intitulé court', 'duree': 'période exacte indiquée par la candidate, si disponible', 'contexte': 'type de structure', 'competences': ['compétences acquises'] }. Inclure TOUTES les expériences mentionnées, y compris les jobs étudiants et le bénévolat. Si une période est fournie dans 'Périodes indiquées pour ces rôles', la reprendre fidèlement dans 'duree' ; ne jamais en inventer une.",
 
   "message": "2-3 phrases max. Personnel et spécifique. Reprends UN détail précis de son diagnostic (un chiffre, un fait, une phrase à elle) pour montrer que tu as vraiment lu. Adresse-toi à son objectif IMMÉDIAT (le poste, les conditions qu'elle cherche maintenant). Sa vision long terme peut être évoquée comme horizon. INTERDIT de terminer par des phrases génériques. Ton : grande sœur bienveillante qui dit la vérité."
 }`,
@@ -1329,6 +1329,7 @@ Prénom : ${vie.name}
 Ville : ${vie.city}
 Situation actuelle : ${vie.situation}
 Rôles qu'elle tient au quotidien : ${Array.isArray(vie.roles) ? vie.roles.join(', ') : vie.roles}
+Périodes indiquées pour ces rôles : ${JSON.stringify(vie.rolePeriods || {})}
 
 === CE QU'ELLE A ACCOMPLI (ses mots) ===
 Sa réussite (même cachée) : "${vie.hiddenSuccess}"
@@ -1492,7 +1493,7 @@ FORMAT JSON:
     // 1. Fetch user profile (portrait)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select('portrait_data')
+      .select('portrait_data, diagnostic_vie_data')
       .eq('id', userId)
       .single();
 
@@ -1501,6 +1502,7 @@ FORMAT JSON:
     }
 
     const portrait = profile.portrait_data;
+    const diagnosticVie = (profile as any).diagnostic_vie_data;
     let portraitContext = '';
     if (portrait) {
       portraitContext = `\n=== PORTRAIT DE FORCE (socle identitaire) ===
@@ -1514,6 +1516,10 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
         portraitContext += `\nExpériences portrait : ${portrait.experiences.map((e: any) => `${e.titre}${e.duree ? ' (' + e.duree + ')' : ''}${e.contexte ? ' — ' + e.contexte : ''}`).join(' | ')}`;
       }
     }
+
+    const rolePeriodsContext = diagnosticVie
+      ? `\n=== RÔLES ET PÉRIODES DÉCLARÉS DANS LE DIAGNOSTIC VIE ===\nRôles : ${JSON.stringify(diagnosticVie.roles || [])}\nPériodes : ${JSON.stringify(diagnosticVie.rolePeriods || {})}`
+      : '';
 
     const enrichmentsContext = enrichments
       ? `\n=== ÉLÉMENTS AJOUTÉS PAR L'UTILISATEUR ===\n${JSON.stringify(enrichments, null, 2)}`
@@ -1537,11 +1543,12 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
 Tu disposes de deux types de données :
 1. **PROFIL LINKEDIN** (texte collé par la candidate) = SOURCE DE VÉRITÉ pour tous les faits : entreprises, postes, dates, compétences, formations, outils, langues, secteurs. C'est le document officiel.
 2. **PORTRAIT DE FORCE** (généré par IA) = SOURCE DE TONALITÉ uniquement. Utilise-le pour le cadrage, l'angle de valorisation, le choix des mots. JAMAIS pour introduire un fait, une compétence, un contexte ou une expérience absente du profil LinkedIn.
+3. **RÔLES ET PÉRIODES DU DIAGNOSTIC VIE** = faits déclarés par la candidate. Tu peux les ajouter comme expériences de vie dans les expériences LinkedIn, en reprenant exactement leurs périodes ; ne les transforme pas en emplois salariés ou en entreprises.
 
 Si le Portrait mentionne quelque chose (ex: "freelance", "événements associatifs", "relation client", "packaging") qui n'apparaît PAS dans le profil LinkedIn ni dans les enrichments → c'est une hallucination du portrait. IGNORE-LA.
 
 # RÈGLE ANTI-HALLUCINATION
-- N'écris QUE ce qui est dans le profil LinkedIn ou les enrichments.
+- N'écris QUE ce qui est dans le profil LinkedIn, les enrichments ou les rôles/périodes explicitement déclarés dans le diagnostic vie.
 - JAMAIS inventer de résultat chiffré ("doubler", "augmenter de 30%").
 - JAMAIS ajouter une compétence, un outil, un contexte ou une expérience absente du profil.
 - JAMAIS utiliser des mots du Portrait comme faits (le portrait dit "résiliente" ≠ écrire "j'ai démontré ma résilience en...").
@@ -1642,7 +1649,7 @@ FORMAT JSON (strict):
         },
         {
           role: 'user',
-          content: `${portraitContext}${targetRoleContext}\n\n=== PROFIL LINKEDIN DE LA CANDIDATE (SOURCE DE VÉRITÉ) ===\n${profileText}${enrichmentsContext}\n\nOptimise ce profil LinkedIn en JSON. Rappel : seuls les faits présents dans le profil ci-dessus sont utilisables. Oriente le profil vers le métier cible si fourni.`,
+          content: `${portraitContext}${rolePeriodsContext}${targetRoleContext}\n\n=== PROFIL LINKEDIN DE LA CANDIDATE (SOURCE DE VÉRITÉ) ===\n${profileText}${enrichmentsContext}\n\nOptimise ce profil LinkedIn en JSON. Rappel : les expériences et périodes explicitement déclarées dans le diagnostic vie peuvent être ajoutées au profil ; seuls les faits présents dans les données fournies sont utilisables. Oriente le profil vers le métier cible si fourni.`,
         },
       ],
     });
