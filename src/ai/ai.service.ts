@@ -760,6 +760,13 @@ générique ou sans rapport.
 Si aucun métier n'est encore clairement exprimé, déduis un métier précis à
 partir de l'ensemble du diagnostic et choisis le libellé ROME le plus proche.
 
+Si elle veut changer complètement de domaine et répond qu'elle n'est pas
+prête à reprendre une formation, élimine les métiers dont l'accès exige un
+diplôme ou une formation obligatoire absente de son profil. Privilégie alors
+les métiers accessibles sans diplôme obligatoire ou par compétences
+transférables. Si elle est prête à se former, les métiers nécessitant une
+formation obligatoire ou une montée en compétences peuvent être proposés.
+
 1. **ORIENTATION DE DOMAINE (35%)** — Respect strict de la réponse rester / domaine proche / changement complet.
 2. **MÉTIER SOUHAITÉ EXPLICITE (35%)** — Correspondance sémantique avec le
    métier demandé, y compris ses synonymes et variantes (par exemple backend,
@@ -1029,6 +1036,7 @@ Expériences structurées : "${this.formatStructuredEntries(pro.experienceEntrie
 Expérience professionnelle : ${pro.hasWorkExperience ? 'Oui' : 'Non'}
 Durée d'expérience : ${this.safe(pro.experienceYears)}
 Souhait de rester dans le domaine : ${this.safe(pro.stayInDomain)}
+Prête à reprendre une formation : ${this.safe(pro.trainingReadiness)}
 
 === CE QUI COMPTE ===
 Énergie : "${this.safe(pro.energySources)}"

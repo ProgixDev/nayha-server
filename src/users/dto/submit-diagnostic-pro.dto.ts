@@ -53,6 +53,10 @@ export class SubmitDiagnosticProDto {
   @IsString()
   stayInDomain?: string;
 
+  @IsOptional()
+  @IsString()
+  trainingReadiness?: string;
+
   @IsString()
   energySources: string;
 
