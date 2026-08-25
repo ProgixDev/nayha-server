@@ -41,6 +41,10 @@ export class UpdateCandidatureDto {
 
   @IsOptional()
   @IsObject()
+  proposition_details?: Record<string, any>;
+
+  @IsOptional()
+  @IsObject()
   cv_adapte?: Record<string, any>;
 
   @IsOptional()

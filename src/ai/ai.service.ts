@@ -2749,7 +2749,7 @@ FORMAT JSON (identique au CV de base) :
     // 1. Fetch candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')
-      .select('entreprise, poste, offre_text, lettre')
+      .select('entreprise, poste, offre_text, lettre, proposition_details')
       .eq('id', candidatureId)
       .eq('user_id', userId)
       .single();
@@ -2771,6 +2771,18 @@ FORMAT JSON (identique au CV de base) :
 
     const offreContext = candidature.offre_text
       ? `\n\n=== OFFRE D'EMPLOI ===\n${candidature.offre_text}`
+      : '';
+    const proposition = candidature.proposition_details ?? {};
+    const propositionContext = Object.values(proposition).some(Boolean)
+      ? `\n\n=== PROPOSITION REÇUE ===\n${[
+          proposition.salaire && `Salaire proposé : ${proposition.salaire}`,
+          proposition.type_contrat && `Type de contrat : ${proposition.type_contrat}`,
+          proposition.date_debut && `Date de début : ${proposition.date_debut}`,
+          proposition.lieu_teletravail && `Lieu / télétravail : ${proposition.lieu_teletravail}`,
+          proposition.horaires && `Horaires : ${proposition.horaires}`,
+          proposition.avantages && `Avantages : ${proposition.avantages}`,
+          proposition.texte && `Texte ou lien du document : ${proposition.texte}`,
+        ].filter(Boolean).join('\n')}`
       : '';
 
     // 3. Call GPT-4o
@@ -2796,7 +2808,7 @@ ${portraitContext}`,
         },
         {
           role: 'user',
-          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}${offreContext}\n\nAide-la à analyser cette proposition d'embauche.`,
+          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}${offreContext}${propositionContext}\n\nAide-la à analyser cette proposition d'embauche. Si une information manque, indique-la clairement plutôt que de l'inventer.`,
         },
       ],
     });

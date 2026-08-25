@@ -122,6 +122,9 @@ export class CandidaturesService {
     if (dto.notes !== undefined) {
       updates.notes = dto.notes;
     }
+    if (dto.proposition_details !== undefined) {
+      updates.proposition_details = dto.proposition_details;
+    }
     if (dto.cv_adapte !== undefined) {
       updates.cv_adapte = dto.cv_adapte;
     }

@@ -14,6 +14,7 @@ create table if not exists candidatures (
   relance_proposee boolean default false,
   relance_envoyee boolean default false,
   notes text,
+  proposition_details jsonb not null default '{}'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -48,12 +49,15 @@ alter table candidatures enable row level security;
 alter table relance_messages enable row level security;
 alter table bilans_mensuels enable row level security;
 
+drop policy if exists "Users can manage own candidatures" on candidatures;
 create policy "Users can manage own candidatures" on candidatures
   for all using (auth.uid() = user_id);
 
+drop policy if exists "Users can manage own relance messages" on relance_messages;
 create policy "Users can manage own relance messages" on relance_messages
   for all using (auth.uid() = user_id);
 
+drop policy if exists "Users can manage own bilans" on bilans_mensuels;
 create policy "Users can manage own bilans" on bilans_mensuels
   for all using (auth.uid() = user_id);
 
