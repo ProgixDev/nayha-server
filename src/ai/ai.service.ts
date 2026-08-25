@@ -1489,23 +1489,19 @@ FORMAT JSON:
 
   async generateLinkedinProfile(
     userId: string,
-    profileText: string,
-    enrichments: any,
-    targetRole?: string,
+    profileText = '',
+    enrichments: any = {},
   ): Promise<LinkedinProfileResult> {
-    // 1. Fetch user profile (portrait)
-    const { data: profile, error: profileError } = await this.supabase
-      .from('user_profiles')
-      .select('portrait_data, diagnostic_vie_data')
-      .eq('id', userId)
-      .single();
-
-    if (profileError || !profile) {
-      throw new NotFoundException('Profile not found');
-    }
+    // Flutter supplies only the pasted LinkedIn text and changes made on this
+    // screen. All persistent profile context is loaded from Supabase here.
+    const profile = await this.loadProfileForAi(
+      userId,
+      'portrait_data, diagnostic_vie_data, diagnostic_pro_data, selected_metier_titre',
+    );
 
     const portrait = profile.portrait_data;
-    const diagnosticVie = (profile as any).diagnostic_vie_data;
+    const diagnosticVie = profile.diagnostic_vie_data || {};
+    const diagnosticPro = profile.diagnostic_pro_data || {};
     let portraitContext = '';
     if (portrait) {
       portraitContext = `\n=== PORTRAIT DE FORCE (socle identitaire) ===
@@ -1524,18 +1520,24 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
       }
     }
 
-    const rolePeriodsContext = diagnosticVie
-      ? `\n=== RÔLES ET PÉRIODES DÉCLARÉS DANS LE DIAGNOSTIC VIE ===\nRôles : ${JSON.stringify(diagnosticVie.roles || [])}\nPériodes : ${JSON.stringify(diagnosticVie.rolePeriods || {})}`
-      : '';
+    const diagnosticContext = this.buildDiagnosticContext(
+      diagnosticVie,
+      diagnosticPro,
+    );
 
     const enrichmentsContext = enrichments
       ? `\n=== ÉLÉMENTS AJOUTÉS PAR L'UTILISATEUR ===\n${JSON.stringify(enrichments, null, 2)}`
       : '';
 
-    const targetRoleContext =
-      targetRole && targetRole.trim()
-        ? `\n=== MÉTIER CIBLE SÉLECTIONNÉ ===\n${targetRole}\nLa candidate a choisi ce métier comme objectif. Le profil LinkedIn doit être orienté vers ce rôle cible tout en restant ancré dans son parcours réel.`
-        : '';
+    const targetRole = (
+      profile.selected_metier_titre as string | undefined
+    )?.trim();
+    if (!targetRole) {
+      throw new BadRequestException(
+        'A target role must be selected before generating a LinkedIn profile',
+      );
+    }
+    const targetRoleContext = `\n=== MÉTIER CIBLE SÉLECTIONNÉ ===\n${targetRole}\nLa candidate a choisi ce métier comme objectif. Le profil LinkedIn doit être orienté vers ce rôle cible tout en restant ancré dans son parcours réel.`;
 
     // 2. Call OpenAI
     const completion = await this.openai.chat.completions.create({
@@ -1548,22 +1550,22 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
           content: `Tu es NAYHA, une experte en optimisation LinkedIn et recrutement. Tu optimises le profil LinkedIn d'une femme.
 
 # HIÉRARCHIE DES SOURCES — CRITIQUE
-Tu disposes de deux types de données :
-1. **PROFIL LINKEDIN** (texte collé par la candidate) = SOURCE DE VÉRITÉ pour tous les faits : entreprises, postes, dates, compétences, formations, outils, langues, secteurs. C'est le document officiel.
-2. **PORTRAIT DE FORCE** (généré par IA) = SOURCE DE TONALITÉ uniquement. Utilise-le pour le cadrage, l'angle de valorisation, le choix des mots. JAMAIS pour introduire un fait, une compétence, un contexte ou une expérience absente du profil LinkedIn.
-3. **RÔLES ET PÉRIODES DU DIAGNOSTIC VIE** = faits déclarés par la candidate. Tu peux les ajouter comme expériences de vie dans les expériences LinkedIn, en reprenant exactement leurs périodes ; ne les transforme pas en emplois salariés ou en entreprises.
+Le serveur te transmet les données de profil persistées de la candidate, ainsi que le texte LinkedIn et les ajouts qu'elle vient de saisir.
+1. **PROFIL LINKEDIN** et **ÉLÉMENTS AJOUTÉS PAR L'UTILISATRICE** = faits déclarés directement pour cette génération.
+2. **DONNÉES DES DIAGNOSTICS** = faits déclarés par la candidate dans l'application. Les expériences structurées, diplômes structurés, expériences décrites, rôles et leurs périodes sont des sources de vérité. Utilise-les pour compléter le profil, même s'ils n'apparaissent pas dans le texte LinkedIn collé.
+3. **PORTRAIT DE FORCE** (généré par IA) = SOURCE DE TONALITÉ uniquement. Utilise-le pour le cadrage, l'angle de valorisation, le choix des mots. JAMAIS pour introduire un fait, une compétence, un contexte ou une expérience absente des sources 1 et 2.
 
-Si le Portrait mentionne quelque chose (ex: "freelance", "événements associatifs", "relation client", "packaging") qui n'apparaît PAS dans le profil LinkedIn ni dans les enrichments → c'est une hallucination du portrait. IGNORE-LA.
+Si le Portrait mentionne quelque chose (ex: "freelance", "événements associatifs", "relation client", "packaging") qui n'apparaît PAS dans les sources 1 ou 2 → c'est une hallucination potentielle du portrait. IGNORE-LA.
 
 # RÈGLE ANTI-HALLUCINATION
-- N'écris QUE ce qui est dans le profil LinkedIn, les enrichments ou les rôles/périodes explicitement déclarés dans le diagnostic vie.
+- N'écris QUE ce qui est dans le profil LinkedIn, les enrichments ou les diagnostics persistés.
 - JAMAIS inventer de résultat chiffré ("doubler", "augmenter de 30%").
-- JAMAIS ajouter une compétence, un outil, un contexte ou une expérience absente du profil.
+- JAMAIS ajouter une compétence, un outil, un contexte ou une expérience absente des sources 1 et 2.
 - JAMAIS utiliser des mots du Portrait comme faits (le portrait dit "résiliente" ≠ écrire "j'ai démontré ma résilience en...").
 - Si une info manque, ne la comble pas.
 
 # MÉTIER CIBLE — ORIENTATION STRATÉGIQUE
-Si un MÉTIER CIBLE est fourni, TOUT le profil doit être réécrit pour ce rôle. C'est une transition de carrière — le profil doit convaincre un recruteur du MÉTIER CIBLE que cette candidate a les bases.
+Le MÉTIER CIBLE est fourni par le serveur et est obligatoire. TOUT le profil doit être réécrit pour ce rôle. C'est une transition de carrière — le profil doit convaincre un recruteur du MÉTIER CIBLE que cette candidate a les bases.
 
 REFORMULER ≠ HALLUCINER. Exemples légitimes :
 - "Designed digital content for websites" → "Designed user-facing digital interfaces and web content" (légitime : c'est la même activité, angle UX)
@@ -1581,7 +1583,7 @@ Concrètement :
 - Si le métier cible est mentionné dans "Open to work" du profil, c'est une compétence déclarée — l'inclure dans les compétences.
 
 # LANGUE
-- Détecte la langue DOMINANTE du profil LinkedIn collé.
+- Détecte la langue DOMINANTE du profil LinkedIn collé. S'il est vide, utilise la langue dominante des diagnostics et des ajouts.
 - Si le profil est en anglais → rédige TOUT en anglais (titre, à propos, expériences).
 - Si en français → tout en français.
 - Les formations peuvent rester dans leur langue d'origine.
@@ -1601,12 +1603,12 @@ Le titre = outil de RÉFÉRENCEMENT. Les recruteurs tapent des mots-clés dans l
 - NE PAS commencer par le nom — LinkedIn l'affiche déjà.
 - 2-3 paragraphes courts :
   • P1 : Spécialité + types de livrables concrets tirés de son expérience réelle.
-  • P2 : Forces distinctives — illustrées par des éléments RÉELS de son parcours (entreprises, projets, outils). Le portrait peut guider l'angle, mais chaque fait doit exister dans le profil.
+  • P2 : Forces distinctives — illustrées par des éléments RÉELS de son parcours (entreprises, projets, outils). Le portrait peut guider l'angle, mais chaque fait doit exister dans les sources factuelles.
   • P3 : Ce qu'elle cherche (postes, secteurs, modalités) — repris directement de "Open to work" et "Secteurs souhaités" si présents.
 - INTERDIT : adjectifs vides ("passionate", "dynamic"), jargon ("storytelling visuel", "expériences engageantes"), phrases sans contenu factuel.
 
 # COMPÉTENCES (competences)
-- Extraire TOUTES les compétences du profil LinkedIn (section Compétences) + enrichments.
+- Extraire TOUTES les compétences du profil LinkedIn, des enrichments et des compétences explicitement listées dans les diagnostics.
 - Les garder telles quelles — noms d'outils exacts.
 - Lister individuellement (pas "Adobe Creative Suite" → "Adobe Photoshop", "Adobe Illustrator", "Adobe InDesign" séparément).
 - Ne PAS en supprimer, ne PAS en inventer.
@@ -1614,7 +1616,7 @@ Le titre = outil de RÉFÉRENCEMENT. Les recruteurs tapent des mots-clés dans l
 - Si le profil liste 16 compétences, le résultat doit en avoir au moins 16.
 
 # EXPÉRIENCES REFORMULÉES (experiencesReformulees)
-- UNE entrée par expérience du profil. Nombre de blocs = nombre d'expériences dans le profil.
+- UNE entrée par expérience du profil LinkedIn, des enrichments, des expériences structurées et des rôles/périodes du diagnostic. Nombre de blocs = nombre d'expériences disponibles dans ces sources.
 - Format par bloc :
   Ligne 1 : "[Company], [Title] ([Period])"
   Lignes suivantes : 3-5 bullets transformant les tâches en livrables concrets.
@@ -1624,16 +1626,16 @@ Le titre = outil de RÉFÉRENCEMENT. Les recruteurs tapent des mots-clés dans l
 - INTERDIT : fusionner des expériences, résumer en un paragraphe vague.
 
 # FORMATIONS (formations)
-- Reprendre TOUTES les formations du profil, aucune suppression, aucun ajout.
+- Reprendre TOUTES les formations du profil, des enrichments, des diplômes structurés et de la formation déclarée dans le diagnostic, aucune suppression.
 - Format : "Diplôme — Spécialité · Établissement (années)"
 
 # EXPÉRIENCES STRUCTURÉES (experiences)
-- Chaque expérience du profil → un objet {title, company, period, details}.
+- Chaque expérience disponible dans les sources factuelles, y compris les rôles de vie déclarés → un objet {title, company, period, details}.
 - "title" : garder l'intitulé tel quel sauf amélioration évidente.
 - "details" : 2-3 phrases reformulées en livrables concrets. Même règle anti-hallucination.
 
 # LANGUES (langues)
-- Reprendre TOUTES les langues mentionnées dans le profil + enrichments.
+- Reprendre TOUTES les langues mentionnées dans le profil et les enrichments.
 - Format : "Langue — Niveau" (ex: "Français — Langue maternelle", "Anglais — Courant").
 - Ne pas en inventer, ne pas en supprimer.
 
@@ -1657,7 +1659,7 @@ FORMAT JSON (strict):
         },
         {
           role: 'user',
-          content: `${portraitContext}${rolePeriodsContext}${targetRoleContext}\n\n=== PROFIL LINKEDIN DE LA CANDIDATE (SOURCE DE VÉRITÉ) ===\n${profileText}${enrichmentsContext}\n\nOptimise ce profil LinkedIn en JSON. Rappel : les expériences et périodes explicitement déclarées dans le diagnostic vie peuvent être ajoutées au profil ; seuls les faits présents dans les données fournies sont utilisables. Oriente le profil vers le métier cible si fourni.`,
+          content: `${diagnosticContext}${portraitContext}${targetRoleContext}\n\n=== PROFIL LINKEDIN DE LA CANDIDATE ===\n${profileText}${enrichmentsContext}\n\nOptimise ce profil LinkedIn en JSON. Utilise les expériences, formations et rôles déclarés dans les diagnostics persistés pour compléter le texte collé. Seuls les faits présents dans les données fournies sont utilisables. Oriente systématiquement le profil vers le métier cible fourni par le serveur.`,
         },
       ],
     });
@@ -1679,7 +1681,7 @@ FORMAT JSON (strict):
           ? parsed.experiences.map((exp: any) => ({
               title: exp.title || '',
               company: exp.company || '',
-              period: exp.period || '2022 – présent',
+              period: exp.period || '',
               details: exp.details || '',
             }))
           : [],

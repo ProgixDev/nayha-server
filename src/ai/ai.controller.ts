@@ -53,15 +53,13 @@ export class AiController {
   @Post('linkedin-profile')
   generateLinkedinProfile(
     @CurrentUser() user: AuthUser,
-    @Body('profileText') profileText: string,
-    @Body('enrichments') enrichments: any,
-    @Body('targetRole') targetRole?: string,
+    @Body('profileText') profileText?: string,
+    @Body('enrichments') enrichments?: any,
   ) {
     return this.aiService.generateLinkedinProfile(
       user.id,
       profileText,
       enrichments,
-      targetRole,
     );
   }
 
