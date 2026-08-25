@@ -41,7 +41,28 @@ export class CandidaturesService {
       throw new Error(error.message);
     }
 
-    return data;
+    const candidatures = data ?? [];
+    if (candidatures.length === 0) return candidatures;
+
+    const { data: relances, error: relancesError } = await this.supabase
+      .from('candidature_actions')
+      .select('candidature_id')
+      .eq('user_id', userId)
+      .eq('action', 'relance_effectuee');
+
+    if (relancesError) {
+      throw new Error(relancesError.message);
+    }
+
+    const relanceCounts = new Map<string, number>();
+    for (const relance of relances ?? []) {
+      const id = relance.candidature_id;
+      relanceCounts.set(id, (relanceCounts.get(id) ?? 0) + 1);
+    }
+    return candidatures.map((candidature) => ({
+      ...candidature,
+      nombre_relances: relanceCounts.get(candidature.id) ?? 0,
+    }));
   }
 
   async create(userId: string, dto: CreateCandidatureDto) {
