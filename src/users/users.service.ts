@@ -79,6 +79,8 @@ export class UsersService {
       parcours_type?: string;
       parcours_analyse_completed?: boolean;
       parcours_first_candidature_completed?: boolean;
+      ateliers_emploi_watched?: string[];
+      actions_semaine_count?: number;
     },
   ) {
     const { data, error } = await this.supabase

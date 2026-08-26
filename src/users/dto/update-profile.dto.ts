@@ -1,4 +1,11 @@
-import { IsBoolean, IsObject, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -48,4 +55,12 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsBoolean()
   parcours_first_candidature_completed?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  ateliers_emploi_watched?: string[];
+
+  @IsOptional()
+  @IsInt()
+  actions_semaine_count?: number;
 }
