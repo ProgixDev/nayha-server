@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpException,
   InternalServerErrorException,
   Logger,
@@ -1362,6 +1363,7 @@ Génère son Portrait de Force. Rappel : tutoie-la, ancre chaque compétence dan
     userId: string,
     offers: string[],
   ): Promise<AnalyseOffresResult> {
+    await this.checkSubscription(userId);
     if (!offers || offers.length === 0) {
       throw new BadRequestException('Veuillez fournir au moins une offre.');
     }
@@ -1492,6 +1494,7 @@ FORMAT JSON:
     profileText = '',
     enrichments: any = {},
   ): Promise<LinkedinProfileResult> {
+    await this.checkSubscription(userId);
     // Flutter supplies only the pasted LinkedIn text and changes made on this
     // screen. All persistent profile context is loaded from Supabase here.
     const profile = await this.loadProfileForAi(
@@ -1709,6 +1712,7 @@ FORMAT JSON (strict):
     targetRole?: string,
     jobOffer?: string,
   ): Promise<CvMetierResult> {
+    await this.checkSubscription(userId);
     // 1. Fetch user profile (portrait + name)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
@@ -1911,6 +1915,7 @@ FORMAT JSON (strict):
     company?: string,
     isSpontaneous = false,
   ): Promise<LettreMotivationResult> {
+    await this.checkSubscription(userId);
     // 1. Fetch user profile — portrait + diagnostics + linkedin + cv for full context
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
@@ -2145,6 +2150,7 @@ OUTPUT — strict JSON
   // ─── Relance Message ─────────────────────────────────────────
 
   async generateRelanceMessage(userId: string, candidatureId: string) {
+    await this.checkSubscription(userId);
     // 1. Fetch the candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')
@@ -2431,6 +2437,7 @@ Génère le debrief.`,
   // ── Simulation d'entretien ────────────────────────────────────────────────
 
   async generateSimulationQuestions(userId: string, candidatureId: string) {
+    await this.checkSubscription(userId);
     // 1. Fetch candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')
@@ -2512,6 +2519,7 @@ Retourne en JSON : { "questions": [{ "text": "string", "hard": boolean }] }`,
     questionText: string,
     answer: string,
   ) {
+    await this.checkSubscription(userId);
     // 1. Fetch candidature for context
     const { data: candidature } = await this.supabase
       .from('candidatures')
@@ -2565,6 +2573,7 @@ Retourne en JSON : { "fort": "string", "ameliorer": "string", "reformulation": "
     candidatureId: string,
     questionsAndAnswers: { question: string; answer: string }[],
   ) {
+    await this.checkSubscription(userId);
     // 1. Fetch candidature
     const { data: candidature } = await this.supabase
       .from('candidatures')
@@ -2612,6 +2621,33 @@ Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", 
     if (!content) throw new Error('OpenAI returned empty response');
 
     return JSON.parse(content);
+  }
+
+  // ─── Subscription gate ──────────────────────────────────────
+
+  private async checkSubscription(userId: string): Promise<void> {
+    const { data } = await this.supabase
+      .from('user_profiles')
+      .select('subscription_status, subscription_expires_at, has_paid')
+      .eq('id', userId)
+      .single();
+
+    if (!data) throw new ForbiddenException('Profile not found');
+
+    // Legacy support: if has_paid but no subscription tracking yet, allow
+    if (data.has_paid && !data.subscription_expires_at) return;
+
+    // Check subscription
+    if (
+      data.subscription_status === 'expired' ||
+      (data.subscription_expires_at &&
+        new Date(data.subscription_expires_at) < new Date())
+    ) {
+      throw new ForbiddenException({
+        error: 'subscription_expired',
+        message: 'Ton abonnement a expiré. Renouvelle pour continuer.',
+      });
+    }
   }
 
   // ─── CV Adapté (per candidature, quota-limited) ──────────────
@@ -2662,6 +2698,7 @@ Retourne en JSON : { "score": number, "pointsATravailler": ["string", "string", 
     offreText: string,
     poste: string,
   ): Promise<CvMetierResult> {
+    await this.checkSubscription(userId);
     // 1. Check & increment quota (throws 429 if exceeded)
     await this.checkAndIncrementCvAdapteQuota(userId);
 
@@ -2746,6 +2783,7 @@ FORMAT JSON (identique au CV de base) :
   // ── Proposition d'embauche ───────────────────────────────────────────────
 
   async generatePropositionEmbaucheHelp(userId: string, candidatureId: string) {
+    await this.checkSubscription(userId);
     // 1. Fetch candidature
     const { data: candidature, error: candidatureError } = await this.supabase
       .from('candidatures')

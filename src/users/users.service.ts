@@ -61,6 +61,20 @@ export class UsersService {
       return newProfile;
     }
 
+    // Auto-expire subscription if past due
+    if (
+      data.subscription_expires_at &&
+      data.subscription_status === 'active' &&
+      new Date(data.subscription_expires_at) < new Date()
+    ) {
+      // Update status in background (don't block the response)
+      this.supabase
+        .from('user_profiles')
+        .update({ subscription_status: 'expired' })
+        .eq('id', userId);
+      data.subscription_status = 'expired';
+    }
+
     return data;
   }
 
@@ -81,11 +95,29 @@ export class UsersService {
       parcours_first_candidature_completed?: boolean;
       ateliers_emploi_watched?: string[];
       actions_semaine_count?: number;
+      subscription_tier?: string;
+      subscription_status?: string;
+      subscription_started_at?: string;
+      subscription_expires_at?: string;
     },
   ) {
+    const enriched = { ...updates };
+
+    // Auto-set subscription fields when has_paid is activated
+    if (enriched.has_paid === true) {
+      const now = new Date();
+      const expiresAt = new Date(now);
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      enriched.subscription_tier = enriched.subscription_tier || 'standard';
+      enriched.subscription_status = 'active';
+      enriched.subscription_started_at = now.toISOString();
+      enriched.subscription_expires_at = expiresAt.toISOString();
+    }
+
     const { data, error } = await this.supabase
       .from('user_profiles')
-      .update(updates)
+      .update(enriched)
       .eq('id', userId)
       .select()
       .single();

@@ -63,4 +63,12 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsInt()
   actions_semaine_count?: number;
+
+  @IsOptional()
+  @IsString()
+  subscription_tier?: string;
+
+  @IsOptional()
+  @IsString()
+  subscription_status?: string;
 }
