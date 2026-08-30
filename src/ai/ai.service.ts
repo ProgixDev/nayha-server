@@ -968,7 +968,6 @@ Réponds en JSON : { "codes": ["K", "M", "J"] }`,
 - Orientation de domaine : "${this.safe(pro.stayInDomain)}"
 - Ce qui donne de l'énergie : "${this.safe(pro.energySources)}"
 - Ce qu'elle refuse : "${this.safe(pro.dealbreakers)}"
-- Conditions idéales : ${this.safe(pro.idealConditions)}
 - Vision / rêve : "${this.safe(vie.vision)}"
 - Journée idéale : "${this.safe(pro.idealDayVision)}"
 - Rôles actuels : ${this.safe(vie.roles)}
@@ -1053,7 +1052,6 @@ Prête à reprendre une formation : ${this.safe(pro.trainingReadiness)}
 === CE QUI COMPTE ===
 Énergie : "${this.safe(pro.energySources)}"
 Refus : "${this.safe(pro.dealbreakers)}"
-Conditions idéales : ${this.safe(pro.idealConditions)}
 Journée idéale : "${this.safe(pro.idealDayVision)}"
 
 === SA VISION ===
@@ -1182,7 +1180,6 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
       this.safe(vie.vision),
       this.safe(pro.energySources),
       this.safe(pro.idealDayVision),
-      this.safe(pro.idealConditions),
       this.safe(pro.dealbreakers),
       this.safe(pro.stayInDomain),
       this.safe(pro.educationDomains),
@@ -1348,7 +1345,6 @@ Expériences : "${pro.workExperiences}"
 === CE QUI COMPTE POUR ELLE ===
 Ce qui lui donne de l'énergie : "${pro.energySources}"
 Ce qu'elle refuse au travail : "${pro.dealbreakers}"
-Conditions idéales : ${Array.isArray(pro.idealConditions) ? pro.idealConditions.join(', ') : pro.idealConditions}
 Sa journée idéale : "${pro.idealDayVision}"
 
 === SA VISION ===

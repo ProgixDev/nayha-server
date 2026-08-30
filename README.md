@@ -57,6 +57,17 @@ $ pnpm run test:e2e
 $ pnpm run test:cov
 ```
 
+## Database schema and seed data
+
+Supabase schema changes are maintained as forward-only SQL migrations in
+[`supabase/migrations`](./supabase/migrations). Development-only seed data
+belongs in [`supabase/seeds`](./supabase/seeds).
+
+See [`supabase/migrations/README.md`](./supabase/migrations/README.md) for the
+one-time project-linking steps and migration conventions. The older `sql/`
+directory is retained only as historical reference for scripts that were
+previously applied manually.
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.

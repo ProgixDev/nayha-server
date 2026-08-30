@@ -45,6 +45,10 @@ export class UpdateProfileDto {
   linkedin_profil?: Record<string, any>;
 
   @IsOptional()
+  @IsObject()
+  retour_emploi_journey?: Record<string, any>;
+
+  @IsOptional()
   @IsString()
   parcours_type?: string;
 
@@ -55,6 +59,10 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsBoolean()
   parcours_first_candidature_completed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  retour_emploi_evaluation_completed?: boolean;
 
   @IsOptional()
   @IsArray()

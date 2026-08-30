@@ -63,10 +63,6 @@ export class SubmitDiagnosticProDto {
   @IsString()
   dealbreakers: string;
 
-  @IsArray()
-  @IsString({ each: true })
-  idealConditions: string[];
-
   @IsString()
   idealDayVision: string;
 }

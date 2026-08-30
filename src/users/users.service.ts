@@ -90,9 +90,11 @@ export class UsersService {
       selected_metier_titre?: string;
       cv_base?: Record<string, any>;
       linkedin_profil?: Record<string, any>;
+      retour_emploi_journey?: Record<string, any>;
       parcours_type?: string;
       parcours_analyse_completed?: boolean;
       parcours_first_candidature_completed?: boolean;
+      retour_emploi_evaluation_completed?: boolean;
       ateliers_emploi_watched?: string[];
       actions_semaine_count?: number;
       subscription_tier?: string;

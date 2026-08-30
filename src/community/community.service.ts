@@ -48,6 +48,28 @@ export class CommunityService {
     }));
   }
 
+  async getUserCount() {
+    const { data, error } = await this.supabase
+      .from('community_posts')
+      .select('user_id', { count: 'exact', head: true });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    // Count distinct users
+    const { data: distinctUsers, error: distinctError } = await this.supabase
+      .from('community_posts')
+      .select('user_id');
+
+    if (distinctError) {
+      throw new Error(distinctError.message);
+    }
+
+    const uniqueUserIds = new Set((distinctUsers ?? []).map((u) => u.user_id));
+    return { count: uniqueUserIds.size };
+  }
+
   async createPost(userId: string, dto: CreatePostDto) {
     // Use client-provided name if available (cached from /users/me in Flutter)
     // Fall back to DB lookup only when missing

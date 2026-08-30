@@ -25,6 +25,11 @@ export class CommunityController {
     return this.communityService.getPosts(user.id);
   }
 
+  @Get('user-count')
+  getUserCount() {
+    return this.communityService.getUserCount();
+  }
+
   @Post()
   createPost(
     @CurrentUser() user: AuthUser,
