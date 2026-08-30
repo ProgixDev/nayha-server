@@ -135,34 +135,17 @@ export class FranceTravailService {
     return data.access_token;
   }
 
-  private premiumCache = new Map<
-    string,
-    { data: any; expiresAt: number }
-  >();
-
   private async getPremiumData<T>(
     operation: string,
     request: () => Promise<T>,
-    cacheKey?: string,
+    _cacheKey?: string,
   ): Promise<T | null> {
-    // Check cache first (5 min TTL)
-    const key = cacheKey || operation;
-    const cached = this.premiumCache.get(key);
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.data as T;
-    }
-
-    // Try with one retry on failure
+    // Premium report data is deliberately not cached: salary and job-market
+    // figures must be refreshed for every report request. Only the OAuth token
+    // is cached above, as required by the France Travail API.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const result = await request();
-        if (result !== null && result !== undefined) {
-          this.premiumCache.set(key, {
-            data: result,
-            expiresAt: Date.now() + 5 * 60 * 1000, // 5 min cache
-          });
-        }
-        return result;
+        return await request();
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
