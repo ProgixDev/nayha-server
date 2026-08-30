@@ -37,6 +37,14 @@ export class UpdateProfileDto {
   selected_metier_titre?: string;
 
   @IsOptional()
+  @IsBoolean()
+  linkedin_relevant?: boolean | null;
+
+  @IsOptional()
+  @IsString()
+  linkedin_relevance_metier_id?: string | null;
+
+  @IsOptional()
   @IsObject()
   cv_base?: Record<string, any>;
 

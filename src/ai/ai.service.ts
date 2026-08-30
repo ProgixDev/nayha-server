@@ -43,6 +43,7 @@ export interface PlanActionResult {
 
 export interface EvaluationResult {
   metierTitre: string;
+  linkedinRelevant: boolean | null;
   sortie:
     'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
   messagePersonnalise: string;
@@ -450,9 +451,15 @@ Le profil contient un Portrait de Force avec des données enrichies. Tu DOIS les
 - Pour le milieu de travail, compare les éléments explicites du métier (public, rythme, déplacements, horaires, travail physique, relation d'aide, environnement) avec "Ce qu'elle refuse au travail", "Conditions idéales" et "Sa journée idéale". Signale une incompatibilité seulement si elle est étayée par les deux côtés ; sinon utilise "a_verifier".
 - Une lacune de milieu doit expliquer le compromis concret à vérifier, jamais juger la personne ni déclarer que le métier lui est interdit.
 
+# PERTINENCE LINKEDIN
+- Retourne "linkedinRelevant": true UNIQUEMENT lorsque LinkedIn est un canal utile en France pour être trouvée, contactée ou recrutée dans ce métier précis.
+- Retourne false lorsque les employeurs recrutent surtout par réseaux locaux, employeurs directs, plateformes publiques, agences ou canaux réglementés, et que LinkedIn apporte peu de valeur pratique.
+- Décide uniquement à partir du métier ROME visé et du marché français, jamais du niveau d'études ou d'une préférence personnelle.
+
 # FORMAT JSON (strict)
 {
   "sortie": "candidaterMaintenant" | "candidaterEtRenforcer" | "formationNecessaire",
+  "linkedinRelevant": true,
   "messagePersonnalise": "2-3 phrases personnalisées, tutoiement, ancrées dans son profil",
   "pointsForts": [
     { "label": "Compétence ancrée dans son vécu" }
@@ -495,6 +502,10 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
 
     const result: EvaluationResult = {
       metierTitre: metier.libelle || metierId,
+      linkedinRelevant:
+        typeof parsed.linkedinRelevant === 'boolean'
+          ? parsed.linkedinRelevant
+          : null,
       sortie: parsed.sortie,
       messagePersonnalise: parsed.messagePersonnalise || '',
       pointsForts: (parsed.pointsForts || []).map((p: any) => ({
@@ -552,6 +563,24 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
         raison: parsed.renforcement.raison || '',
         duree: parsed.renforcement.duree || '',
       };
+    }
+
+    const { error: relevanceError } = await this.supabase
+      .from('user_profiles')
+      .update({
+        linkedin_relevant: result.linkedinRelevant,
+        linkedin_relevance_metier_id: metierId,
+      })
+      .eq('id', userId);
+
+    if (relevanceError) {
+      this.logger.error(
+        `Could not save LinkedIn relevance for user ${userId}: ${relevanceError.message}`,
+        relevanceError.code,
+      );
+      throw new InternalServerErrorException(
+        'Could not save LinkedIn relevance decision',
+      );
     }
 
     return result;

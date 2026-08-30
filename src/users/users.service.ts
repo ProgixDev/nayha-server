@@ -88,6 +88,8 @@ export class UsersService {
       has_paid?: boolean;
       selected_metier_id?: string;
       selected_metier_titre?: string;
+      linkedin_relevant?: boolean | null;
+      linkedin_relevance_metier_id?: string | null;
       cv_base?: Record<string, any>;
       linkedin_profil?: Record<string, any>;
       retour_emploi_journey?: Record<string, any>;
@@ -104,6 +106,26 @@ export class UsersService {
     },
   ) {
     const enriched = { ...updates };
+
+    // A relevance decision belongs to one exact target job. Clear it in the
+    // same profile update whenever the user chooses a different métier.
+    if (updates.selected_metier_id !== undefined) {
+      const { data: currentProfile, error: currentProfileError } =
+        await this.supabase
+          .from('user_profiles')
+          .select('selected_metier_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+      if (currentProfileError || !currentProfile) {
+        throw new NotFoundException('Profile not found');
+      }
+
+      if (currentProfile.selected_metier_id !== updates.selected_metier_id) {
+        enriched.linkedin_relevant = null;
+        enriched.linkedin_relevance_metier_id = null;
+      }
+    }
 
     // Auto-set subscription fields when has_paid is activated
     if (enriched.has_paid === true) {
