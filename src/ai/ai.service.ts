@@ -83,6 +83,8 @@ export interface AnalyseOffresResult {
   alertes: string[];
   detailParOffre: OffreDetail[];
   recommandation: string; // which offer to prioritize and why
+  offresInvalides?: boolean;
+  motifInvalidite?: string;
 }
 
 export interface LinkedinProfileResult {
@@ -1441,6 +1443,16 @@ Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.
 # OBJECTIF
 Donner une analyse de marché honnête et utile : où son profil correspond, où sont les vrais écarts, et quelle offre prioriser. Encourageante mais jamais complaisante — elle a besoin de savoir la vérité pour se préparer.
 
+# VÉRIFICATION STRICTE DE LA VALIDITÉ DES OFFRES
+- Analyse chaque texte fourni. Une offre est INVALIDE si :
+  1. C'est du faux texte, du spam, des phrases aléatoires, du lorem ipsum, des caractères au hasard, ou un texte vide de sens qui n'a rien d'une offre d'emploi.
+  2. C'est un texte qui n'a manifestement aucun rapport avec le métier visé (ex: texte sur une recette de cuisine ou offre de maçonnerie alors que le métier visé est Développeuse web).
+- Si UNE ou DEUX offres sont invalides/hors-sujet mais qu'au moins une offre est valide et pertinente : ignore les offres invalides pour l'analyse des compétences, signale-les dans "alertes", et fais l'analyse sur les offres valides avec "offresInvalides": false.
+- Si TOUTES les offres fournies sont invalides, bidons ou complètement hors-sujet :
+  - Définis "offresInvalides": true.
+  - Définis "motifInvalidite": "Explication claire, bienveillante et personnalisée (ex: 'Les textes collés ne semblent pas correspondre à de véritables offres d'emploi pour le métier visé. Veille à copier le texte complet de vraies annonces.')".
+  - Ne génère pas d'analyse fictive : laisse les listes vides ou avec des valeurs minimales.
+
 # RÈGLES
 - Tutoiement obligatoire.
 - Ton encourageant mais factuel. Quand un écart est significatif (outil requis qu'elle ne maîtrise pas, années d'expérience insuffisantes), le dire clairement avec le niveau de gravité.
@@ -1454,7 +1466,7 @@ Donner une analyse de marché honnête et utile : où son profil correspond, où
 - "aTravailler" : 2-4 points avec niveau de gravité implicite. Distinguer ce qui est bloquant ("Figma est requis pour Doctolib, tu ne le maîtrises pas encore") de ce qui est secondaire ("une sensibilité au secteur immobilier serait un plus").
 
 # ANALYSE PAR OFFRE — c'est le cœur
-Pour CHAQUE offre, produire un objet avec :
+Pour CHAQUE offre valide, produire un objet avec :
 - "entreprise" : nom de l'entreprise
 - "poste" : intitulé du poste
 - "score" : "Forte", "Moyenne" ou "Partielle"
@@ -1467,6 +1479,8 @@ Pour CHAQUE offre, produire un objet avec :
 
 FORMAT JSON:
 {
+  "offresInvalides": false,
+  "motifInvalidite": null,
   "alertes": ["string"],
   "scoreGlobal": "string",
   "motsCles": ["string"],
@@ -1488,7 +1502,7 @@ FORMAT JSON:
         },
         {
           role: 'user',
-          content: `${diagnosticContext}${portraitContext}\n\nVoici les offres que la candidate a ciblées :\n${offersContext}\n\nVérifie d'abord que chaque texte est bien une offre d'emploi exploitable et cohérente avec le métier visé. Si ce n'est pas le cas, ajoute une alerte explicite dans "alertes", puis génère quand même le reste du rapport. Génère le rapport d'analyse en JSON.`,
+          content: `${diagnosticContext}${portraitContext}\n\nVoici les offres que la candidate a ciblées :\n${offersContext}\n\nVérifie d'abord que chaque texte est bien une offre d'emploi exploitable et cohérente avec le métier visé. Si ce n'est pas le cas, ajoute une alerte explicite dans "alertes", puis génère le rapport d'analyse en JSON. Si toutes les offres sont invalides, définis "offresInvalides": true.`,
         },
       ],
     });
@@ -1500,7 +1514,14 @@ FORMAT JSON:
 
     try {
       const parsed = JSON.parse(content);
+      const offresInvalides = parsed.offresInvalides === true;
       return {
+        offresInvalides,
+        motifInvalidite:
+          parsed.motifInvalidite ||
+          (offresInvalides
+            ? 'Les textes collés ne semblent pas correspondre à des offres d’emploi exploitables pour ton métier visé.'
+            : undefined),
         scoreGlobal: parsed.scoreGlobal || 'Analyse terminée',
         motsCles: Array.isArray(parsed.motsCles) ? parsed.motsCles : [],
         pointsForts: Array.isArray(parsed.pointsForts)
