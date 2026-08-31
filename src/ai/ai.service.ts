@@ -44,6 +44,7 @@ export interface PlanActionResult {
 export interface EvaluationResult {
   metierTitre: string;
   linkedinRelevant: boolean | null;
+  vaePossible?: boolean;
   sortie:
     'candidaterMaintenant' | 'candidaterEtRenforcer' | 'formationNecessaire';
   messagePersonnalise: string;
@@ -456,10 +457,15 @@ Le profil contient un Portrait de Force avec des données enrichies. Tu DOIS les
 - Retourne false lorsque les employeurs recrutent surtout par réseaux locaux, employeurs directs, plateformes publiques, agences ou canaux réglementés, et que LinkedIn apporte peu de valeur pratique.
 - Décide uniquement à partir du métier ROME visé et du marché français, jamais du niveau d'études ou d'une préférence personnelle.
 
+# PERTINENCE VAE (Validation des Acquis de l'Expérience)
+- Retourne "vaePossible": true UNIQUEMENT si la candidate possède déjà une expérience professionnelle significative (salariée, bénévole, stages, missions ou projets concrets) dans le domaine direct ou très proche de ce métier cible qui pourrait justifier une démarche de VAE en France.
+- Retourne false si elle n'a jamais exercé dans ce domaine/secteur, ou si ses expériences passées n'ont pas de lien suffisant avec le métier cible (dans ce cas, une VAE n'est pas adaptée, seule une formation classique/reconversion convient).
+
 # FORMAT JSON (strict)
 {
   "sortie": "candidaterMaintenant" | "candidaterEtRenforcer" | "formationNecessaire",
   "linkedinRelevant": true,
+  "vaePossible": false,
   "messagePersonnalise": "2-3 phrases personnalisées, tutoiement, ancrées dans son profil",
   "pointsForts": [
     { "label": "Compétence ancrée dans son vécu" }
@@ -506,6 +512,7 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
         typeof parsed.linkedinRelevant === 'boolean'
           ? parsed.linkedinRelevant
           : null,
+      vaePossible: parsed.vaePossible === true,
       sortie: parsed.sortie,
       messagePersonnalise: parsed.messagePersonnalise || '',
       pointsForts: (parsed.pointsForts || []).map((p: any) => ({
@@ -999,7 +1006,7 @@ Réponds en JSON : { "codes": ["K", "M", "J"] }`,
 - Ce qu'elle refuse : "${this.safe(pro.dealbreakers)}"
 - Vision / rêve : "${this.safe(vie.vision)}"
 - Journée idéale : "${this.safe(pro.idealDayVision)}"
-- Rôles actuels : ${this.safe(vie.roles)}
+- Moments de vie / engagements : "${this.safe(vie.notesDeVie || vie.roles)}"
 - Situation : ${this.safe(vie.situation)}
 
 Quels 3 grands domaines ROME correspondent le mieux à ce qu'elle VEUT devenir ?`,
@@ -1063,7 +1070,7 @@ Quels 3 grands domaines ROME correspondent le mieux à ce qu'elle VEUT devenir ?
 Prénom : ${this.safe(vie.name)}
 Âge : ${this.safe(vie.age)} ans
 Situation : ${this.safe(vie.situation)}
-Rôles : ${this.safe(vie.roles)}
+${vie.notesDeVie ? `Moments de vie et engagements : "${this.safe(vie.notesDeVie)}"` : (vie.roles ? `Rôles : ${this.safe(vie.roles)}` : '')}
 
 === PARCOURS ===
 Niveau d'études : ${this.safe(pro.educationLevel)}
@@ -1212,6 +1219,7 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
       this.safe(pro.dealbreakers),
       this.safe(pro.stayInDomain),
       this.safe(pro.educationDomains),
+      this.safe(vie.notesDeVie),
       this.safe(vie.roles),
       this.safe(vie.situation),
       this.safe(vie.naturalStrength),
@@ -1358,8 +1366,7 @@ Prénom : ${vie.name}
 Âge : ${vie.age} ans
 Ville : ${vie.city}
 Situation actuelle : ${vie.situation}
-Rôles qu'elle tient au quotidien : ${Array.isArray(vie.roles) ? vie.roles.join(', ') : vie.roles}
-Périodes indiquées pour ces rôles : ${JSON.stringify(vie.rolePeriods || {})}
+${vie.notesDeVie ? `Moments de vie / engagements / valeurs personnelles : "${vie.notesDeVie}"` : (vie.roles ? `Rôles : ${Array.isArray(vie.roles) ? vie.roles.join(', ') : vie.roles}` : '')}
 
 === CE QU'ELLE A ACCOMPLI (ses mots) ===
 Sa réussite (même cachée) : "${vie.hiddenSuccess}"

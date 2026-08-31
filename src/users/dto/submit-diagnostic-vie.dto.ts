@@ -27,13 +27,18 @@ export class SubmitDiagnosticVieDto {
   @IsNotEmpty()
   situation: string;
 
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  roles: string[];
+  roles?: string[];
 
   @IsOptional()
   @IsObject()
   rolePeriods?: Record<string, string>;
+
+  @IsOptional()
+  @IsString()
+  notesDeVie?: string;
 
   @IsString()
   hiddenSuccess: string;
