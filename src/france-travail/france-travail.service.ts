@@ -272,20 +272,22 @@ export class FranceTravailService {
    * Build a complete fiche métier by combining all ROME tables.
    */
   async getFullFicheMetier(codeRome: string) {
-    // Fetch métier (DB) + fiche (DB) + full métier from API (for contextesTravail) in parallel
-    const [metierResult, ficheResult, apiMetier] = await Promise.all([
-      this.supabase
-        .from('rome_metiers')
-        .select('data')
-        .eq('code', codeRome)
-        .single(),
-      this.supabase
-        .from('rome_fiches_metiers')
-        .select('data')
-        .eq('code', codeRome)
-        .single(),
-      this.fetchMetierFromApi(codeRome),
-    ]);
+    // Fetch métier (DB) + fiche (DB) + full métier from API + salaires in parallel
+    const [metierResult, ficheResult, apiMetier, rawSalaires] =
+      await Promise.all([
+        this.supabase
+          .from('rome_metiers')
+          .select('data')
+          .eq('code', codeRome)
+          .single(),
+        this.supabase
+          .from('rome_fiches_metiers')
+          .select('data')
+          .eq('code', codeRome)
+          .single(),
+        this.fetchMetierFromApi(codeRome),
+        this.getSalaires(codeRome, 'NAT', 'FR').catch(() => null),
+      ]);
 
     if (metierResult.error || !metierResult.data) {
       throw new Error(`Métier ${codeRome} not found`);
@@ -387,13 +389,8 @@ export class FranceTravailService {
       // Knowledge (from fiche)
       savoirsParCategorie,
 
-      // Data we don't have yet — N/A placeholders
-      salaire: {
-        min: 'N/A',
-        median: 'N/A',
-        max: 'N/A',
-        source: 'N/A',
-      },
+      // Real salary data (matching Rapport d'employabilité)
+      salaire: this.extractSalaires(rawSalaires, codeRome),
       tensionMarche: {
         offres: 'N/A',
         demandeurs: 'N/A',
