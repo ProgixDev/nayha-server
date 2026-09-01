@@ -345,12 +345,25 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
     // 1. Fetch user profile (diagnostics + portrait)
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
-      .select('diagnostic_vie_data, diagnostic_pro_data, portrait_data')
+      .select(
+        'diagnostic_vie_data, diagnostic_pro_data, portrait_data, selected_metier_id',
+      )
       .eq('id', userId)
       .single();
 
     if (profileError || !profile) {
       throw new NotFoundException('Profile not found');
+    }
+
+    const targetMetierCode = (
+      metierId ||
+      profile.selected_metier_id ||
+      ''
+    ).trim();
+    if (!targetMetierCode) {
+      throw new BadRequestException(
+        'Aucun métier sélectionné pour l’évaluation.',
+      );
     }
 
     const { diagnostic_vie_data: vie, diagnostic_pro_data: pro } = profile;
@@ -363,17 +376,17 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
       this.supabase
         .from('rome_metiers')
         .select('data')
-        .eq('code', metierId)
+        .eq('code', targetMetierCode)
         .single(),
       this.supabase
         .from('rome_fiches_metiers')
         .select('data')
-        .eq('code', metierId)
+        .eq('code', targetMetierCode)
         .single(),
     ]);
 
     if (metierResult.error || !metierResult.data) {
-      throw new NotFoundException(`Métier ${metierId} not found`);
+      throw new NotFoundException(`Métier ${targetMetierCode} not found`);
     }
 
     const metier = metierResult.data.data;
@@ -578,7 +591,7 @@ Compare ce profil avec les exigences du métier. Quelle sortie ?`,
       .from('user_profiles')
       .update({
         linkedin_relevant: result.linkedinRelevant,
-        linkedin_relevance_metier_id: metierId,
+        linkedin_relevance_metier_id: targetMetierCode,
       })
       .eq('id', userId);
 
