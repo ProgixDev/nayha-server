@@ -122,4 +122,47 @@ export class FranceTravailController {
       codeTerritoire || 'FR',
     );
   }
+
+  // ---- Certifications CertifInfo (referentiel local) ----
+
+  /**
+   * GET /ft/certifications/search?q=aide+soignant&limit=20
+   * Recherche textuelle sur le libelle du diplome.
+   */
+  @Get('certifications/search')
+  searchCertifications(
+    @Query('q') query: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ftService.searchCertifications(
+      query || '',
+      limit ? parseInt(limit) : 20,
+    );
+  }
+
+  /**
+   * GET /ft/certifications/rome/J1502?activeOnly=true&limit=50
+   * Retourne toutes les certifications liees a un code ROME.
+   */
+  @Get('certifications/rome/:codeRome')
+  getCertificationsByRome(
+    @Param('codeRome') codeRome: string,
+    @Query('activeOnly') activeOnly?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ftService.getCertificationsByRome(codeRome, {
+      activeOnly: activeOnly === 'true',
+      limit: limit ? parseInt(limit) : 50,
+    });
+  }
+
+  /**
+   * GET /ft/certifications/111669
+   * Retourne le detail complet d une certification par son Code_Diplome.
+   */
+  @Get('certifications/:id')
+  getCertification(@Param('id') id: string) {
+    return this.ftService.getCertification(parseInt(id));
+  }
 }
+

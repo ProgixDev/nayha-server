@@ -840,4 +840,76 @@ export class FranceTravailService {
       })),
     };
   }
+
+  // ──────────────────────────────────────────────
+  // Certifications CertifInfo (referentiel local)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Retourne toutes les certifications associees a un code ROME.
+   * Utilise l'index GIN sur code_romes[] pour des requetes O(log n).
+   * Ex: codeRome = 'J1502'
+   */
+  async getCertificationsByRome(
+    codeRome: string,
+    options: { activeOnly?: boolean; limit?: number } = {},
+  ) {
+    const { activeOnly = false, limit = 50 } = options;
+
+    let query = this.supabase
+      .from('certifications')
+      .select(
+        'id, libelle_diplome, libelle_type_diplome, niveau_europeen, ' +
+          'code_rncp, code_rs, code_romes, certificateur, etat_libelle, ' +
+          'accessibilite_vae, accessibilite_fi, accessibilite_ca, ' +
+          'accessibilite_fc, accessibilite_cp, annee_premiere_session, ' +
+          'annee_derniere_session, date_maj',
+      )
+      .contains('code_romes', [codeRome.toUpperCase()])
+      .order('niveau_europeen', { ascending: false })
+      .limit(limit);
+
+    if (activeOnly) {
+      query = query.eq('etat_libelle', 'Publie');
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`getCertificationsByRome: ${error.message}`);
+    return data ?? [];
+  }
+
+  /**
+   * Retourne une certification precise par son Code_Diplome (id CertifInfo).
+   */
+  async getCertification(id: number) {
+    const { data, error } = await this.supabase
+      .from('certifications')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) throw new Error(`Certification ${id} non trouvee`);
+    return data;
+  }
+
+  /**
+   * Recherche textuelle sur le libelle du diplome (trigrammes).
+   * Supporte la recherche partielle: 'aide' trouve 'Aide-Soignant'.
+   */
+  async searchCertifications(query: string, limit = 20) {
+    if (!query?.trim()) return [];
+
+    const { data, error } = await this.supabase
+      .from('certifications')
+      .select(
+        'id, libelle_diplome, libelle_type_diplome, niveau_europeen, ' +
+          'code_rncp, code_romes, certificateur, etat_libelle',
+      )
+      .ilike('libelle_diplome', `%${query.trim()}%`)
+      .order('niveau_europeen', { ascending: false })
+      .limit(limit);
+
+    if (error) throw new Error(`searchCertifications: ${error.message}`);
+    return data ?? [];
+  }
 }
