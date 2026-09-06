@@ -88,6 +88,7 @@ export class UsersService {
       has_paid?: boolean;
       selected_metier_id?: string;
       selected_metier_titre?: string;
+      selected_metier_certification_required?: string;
       linkedin_relevant?: boolean | null;
       linkedin_relevance_metier_id?: string | null;
       cv_base?: Record<string, any>;

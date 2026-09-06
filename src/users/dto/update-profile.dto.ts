@@ -37,6 +37,10 @@ export class UpdateProfileDto {
   selected_metier_titre?: string;
 
   @IsOptional()
+  @IsString()
+  selected_metier_certification_required?: string;
+
+  @IsOptional()
   @IsBoolean()
   linkedin_relevant?: boolean | null;
 
