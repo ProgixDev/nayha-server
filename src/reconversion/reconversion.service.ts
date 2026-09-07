@@ -7,7 +7,8 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { AiService, EvaluationResult } from '../ai/ai.service';
 
-type PrerequisLevel = 'obligatoire' | 'fortement_attendu' | 'utile';
+type PrerequisLevel =
+  'a_verifier' | 'obligatoire' | 'fortement_attendu' | 'utile';
 type PrerequisStatus =
   'acquis' | 'partiellement_acquis' | 'a_construire' | 'a_verifier';
 
@@ -32,6 +33,8 @@ export interface Prerequis {
   explication: string;
   pourquoi: string;
   prochaineEtape: string;
+  /** Present only when the ROME access wording explicitly states an obligation. */
+  sourceReglementaire?: string;
   source: {
     type: 'rome' | 'certifinfo';
     reference: string;
@@ -137,6 +140,7 @@ export class ReconversionService {
       },
       prerequis: this.buildPrerequis(
         codeRome,
+        metier.accesEmploi,
         fiche,
         certifications,
         evaluation,
@@ -193,11 +197,13 @@ export class ReconversionService {
 
   private buildPrerequis(
     codeRome: string,
+    accesEmploi: unknown,
     fiche: Record<string, any> | null,
     certifications: Certification[],
     evaluation: EvaluationResult,
   ): Prerequis[] {
     const prerequis: Prerequis[] = [];
+    const sourceReglementaire = this.legalAccessSource(accesEmploi);
     const usedTitles = new Set<string>();
     const add = (item: Prerequis) => {
       const key = this.normalized(item.titre);
@@ -217,9 +223,13 @@ export class ReconversionService {
       add(
         this.fromLacune(
           lacune,
-          'obligatoire',
+          sourceReglementaire ? 'obligatoire' : 'fortement_attendu',
+          codeRome,
           certification,
-          'Cette exigence est signalée par l’accès au métier ROME. Sa base légale doit être vérifiée avant de l’afficher comme une obligation réglementaire.',
+          sourceReglementaire
+            ? 'Le référentiel ROME indique explicitement cette exigence comme obligatoire pour accéder au métier.'
+            : 'Niveau d’accès ou certification fréquemment attendu pour ce métier. À confirmer selon l’employeur et le poste visé.',
+          sourceReglementaire,
         ),
       );
     }
@@ -227,20 +237,22 @@ export class ReconversionService {
     for (const lacune of evaluation.lacunes.filter(
       (item) => item.niveau === 'a_developper',
     )) {
-      add(this.fromLacune(lacune, 'fortement_attendu'));
+      add(this.fromLacune(lacune, 'fortement_attendu', codeRome));
     }
 
     for (const lacune of evaluation.lacunes.filter(
       (item) => item.niveau === 'a_verifier',
     )) {
-      add(this.fromLacune(lacune, 'utile'));
+      add(this.fromLacune(lacune, 'utile', codeRome));
     }
 
     for (const competence of this.romeCompetences(fiche)) {
       add({
         id: `rome:${codeRome}:${this.slug(competence)}`,
-        titre: competence,
-        niveau: prerequis.length === 0 ? 'fortement_attendu' : 'utile',
+        titre: this.toCompetenceRequirement(competence),
+        niveau: prerequis.some((item) => item.niveau === 'fortement_attendu')
+          ? 'utile'
+          : 'fortement_attendu',
         statutUtilisateur: 'a_verifier',
         explication: 'Compétence identifiée dans la fiche métier ROME.',
         pourquoi:
@@ -261,20 +273,25 @@ export class ReconversionService {
   private fromLacune(
     lacune: EvaluationResult['lacunes'][number],
     niveau: PrerequisLevel,
+    codeRome: string,
     certification?: Certification,
     explicationOverride?: string,
+    sourceReglementaire?: string,
   ): Prerequis {
     return {
       id: certification
         ? `certifinfo:${certification.id}`
         : `ecart:${this.slug(lacune.element)}`,
-      titre: certification?.libelle_diplome || lacune.element,
+      titre:
+        certification?.libelle_diplome ||
+        this.toCompetenceRequirement(lacune.element),
       niveau,
       statutUtilisateur:
         lacune.niveau === 'a_verifier' ? 'a_verifier' : 'a_construire',
       explication: explicationOverride || lacune.pourquoi,
       pourquoi: lacune.pourquoi,
       prochaineEtape: lacune.prochaineEtape,
+      sourceReglementaire,
       source: certification
         ? {
             type: 'certifinfo',
@@ -285,12 +302,12 @@ export class ReconversionService {
             url: certification.code_rncp
               ? `https://www.francecompetences.fr/recherche/rncp/${certification.code_rncp}`
               : undefined,
-            verificationReglementaireRequise: niveau === 'obligatoire',
+            verificationReglementaireRequise: niveau !== 'obligatoire',
           }
         : {
             type: 'rome',
-            reference: 'ROME 4.0',
-            verificationReglementaireRequise: niveau === 'obligatoire',
+            reference: codeRome,
+            verificationReglementaireRequise: false,
           },
       certification: certification
         ? {
@@ -320,6 +337,59 @@ export class ReconversionService {
       }
     }
     return competences;
+  }
+
+  /**
+   * Product rule: ROME access information counts as a legal obligation only
+   * when it explicitly uses the word "obligatoire". Typical access wording
+   * such as "niveau Licence" remains an employer expectation.
+   */
+  private legalAccessSource(accesEmploi: unknown): string | undefined {
+    if (typeof accesEmploi !== 'string' || !accesEmploi.trim()) {
+      return undefined;
+    }
+
+    const access = accesEmploi.trim();
+    const normalized = this.normalized(access);
+    const isNegated =
+      normalized.includes('non obligatoire') ||
+      normalized.includes('pas obligatoire') ||
+      normalized.includes('sans obligation');
+
+    return !isNegated && /\bobligatoire(?:s|ment)?\b/.test(normalized)
+      ? `ROME — Accès à l’emploi : ${access}`
+      : undefined;
+  }
+
+  /**
+   * ROME lists activities as well as skills. The screen must phrase an
+   * activity as a capability to build, never as a task already expected from
+   * the user.
+   */
+  private toCompetenceRequirement(value: string): string {
+    const normalized = this.normalized(value);
+    if (
+      normalized.includes('prestation de bilan') ||
+      normalized.includes('orientation professionnelle')
+    ) {
+      return 'Maîtriser la conduite d’entretiens et l’analyse de parcours';
+    }
+    if (normalized.includes('bilan de competences')) {
+      return 'Maîtriser la méthodologie du bilan de compétences';
+    }
+    if (
+      normalized.includes('passation de tests') ||
+      normalized.includes('outils d evaluation')
+    ) {
+      return 'Savoir utiliser et interpréter des outils d’évaluation';
+    }
+    if (
+      normalized.includes('bilan') ||
+      normalized.includes('orientation professionnelle')
+    ) {
+      return 'Conduire des entretiens et analyser les parcours professionnels';
+    }
+    return value;
   }
 
   private findCertification(
