@@ -214,6 +214,7 @@ export class ReconversionService {
   ): Promise<FormationPage> {
     const query = new URLSearchParams({
       CODES_ROME_search: codeRome,
+      ACTIF_eq: 'true',
       size: String(ReconversionService.formationsPageSize),
     });
     if (after != null && after.length > 0) {
@@ -232,9 +233,12 @@ export class ReconversionService {
 
     const payload = (await response.json()) as KoumoulPage;
     const results = Array.isArray(payload.results) ? payload.results : [];
+
     return {
       source: 'koumoul',
-      results: results.map((row) => this.koumoulCertificationToFormation(row)),
+      results: results
+        .filter((row) => this.isActiveExactRomeMatch(row, codeRome))
+        .map((row) => this.koumoulCertificationToFormation(row)),
       nextCursor: this.cursorFromKoumoulNext(payload.next),
     };
   }
@@ -257,6 +261,7 @@ export class ReconversionService {
         { count: 'exact' },
       )
       .contains('code_romes', [codeRome])
+      .ilike('etat_libelle', 'publi%')
       .order('niveau_europeen', { ascending: false })
       .range(offset, end);
 
@@ -308,6 +313,20 @@ export class ReconversionService {
       alternanceAccessible: row['SI_JURY_CA'] === true,
       statistiquesPromotions: row['statistiques_promotions'] ?? null,
     };
+  }
+
+  private isActiveExactRomeMatch(
+    row: Record<string, unknown>,
+    codeRome: string,
+  ): boolean {
+    const etat = this.text(row['ETAT_FICHE']).toLowerCase();
+    return (
+      row['ACTIF'] === true &&
+      etat.startsWith('publi') &&
+      this.splitValues(row['CODES_ROME'])
+        .map((code) => code.toUpperCase())
+        .includes(codeRome)
+    );
   }
 
   private supabaseCertificationToFormation(
