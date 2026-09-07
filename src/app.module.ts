@@ -7,6 +7,7 @@ import { FranceTravailModule } from './france-travail/france-travail.module';
 import { AiModule } from './ai/ai.module';
 import { CandidaturesModule } from './candidatures/candidatures.module';
 import { CommunityModule } from './community/community.module';
+import { ReconversionModule } from './reconversion/reconversion.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -21,6 +22,7 @@ import { HealthController } from './health.controller';
     AiModule,
     CandidaturesModule,
     CommunityModule,
+    ReconversionModule,
   ],
   controllers: [HealthController],
 })
