@@ -25,6 +25,19 @@ interface Certification {
   accessibilite_ca: number | null;
 }
 
+type FormationSource = 'koumoul' | 'supabase';
+
+interface KoumoulPage {
+  next?: string;
+  results?: Record<string, unknown>[];
+}
+
+export interface FormationPage {
+  source: FormationSource;
+  results: Record<string, unknown>[];
+  nextCursor: string | null;
+}
+
 export interface Prerequis {
   id: string;
   titre: string;
@@ -55,6 +68,9 @@ export interface Prerequis {
 @Injectable()
 export class ReconversionService {
   private readonly supabase: SupabaseClient;
+  private static readonly formationsPageSize = 10;
+  private static readonly koumoulFormationsUrl =
+    'https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines';
 
   constructor(
     configService: ConfigService,
@@ -159,6 +175,213 @@ export class ReconversionService {
       prioritePrerequisId: storedJourney?.prioritePrerequisId ?? null,
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Returns a stable, app-facing page of RNCP certifications.
+   *
+   * The cursor remains opaque to the app.  Koumoul supplies it in `next`,
+   * while the Supabase fallback uses its offset as a cursor. Both sources
+   * always return pages of ten records.
+   */
+  async getFormationsByRome(
+    rawCodeRome: string,
+    options: { after?: string; source?: string } = {},
+  ): Promise<FormationPage> {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const requestedSource = this.parseFormationSource(options.source);
+
+    if (requestedSource === 'supabase') {
+      return this.getSupabaseFormationPage(codeRome, options.after);
+    }
+
+    const koumoulPage = await this.getKoumoulFormationPage(
+      codeRome,
+      options.after,
+    );
+    if (koumoulPage.results.length > 0 || requestedSource === 'koumoul') {
+      return koumoulPage;
+    }
+
+    // Only an explicitly empty Koumoul first page activates the local source.
+    // We do not silently replace a later Koumoul page with unrelated records.
+    return this.getSupabaseFormationPage(codeRome, options.after);
+  }
+
+  private async getKoumoulFormationPage(
+    codeRome: string,
+    after?: string,
+  ): Promise<FormationPage> {
+    const query = new URLSearchParams({
+      CODES_ROME_search: codeRome,
+      size: String(ReconversionService.formationsPageSize),
+    });
+    if (after != null && after.length > 0) {
+      if (!/^\d+$/.test(after)) {
+        throw new BadRequestException('Curseur de pagination invalide');
+      }
+      query.set('after', after);
+    }
+
+    const response = await fetch(
+      `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Koumoul indisponible (${response.status})`);
+    }
+
+    const payload = (await response.json()) as KoumoulPage;
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    return {
+      source: 'koumoul',
+      results: results.map((row) => this.koumoulCertificationToFormation(row)),
+      nextCursor: this.cursorFromKoumoulNext(payload.next),
+    };
+  }
+
+  private async getSupabaseFormationPage(
+    codeRome: string,
+    after?: string,
+  ): Promise<FormationPage> {
+    const offset =
+      after == null || after.length === 0 ? 0 : Number.parseInt(after, 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new BadRequestException('Curseur de pagination invalide');
+    }
+
+    const end = offset + ReconversionService.formationsPageSize - 1;
+    const { data, error, count } = await this.supabase
+      .from('certifications')
+      .select(
+        'id, libelle_diplome, niveau_europeen, code_rncp, code_romes, certificateur, etat_libelle, accessibilite_vae, accessibilite_fc, accessibilite_ca, date_maj',
+        { count: 'exact' },
+      )
+      .contains('code_romes', [codeRome])
+      .order('niveau_europeen', { ascending: false })
+      .range(offset, end);
+
+    if (error) {
+      throw new Error(`Certifications indisponibles: ${error.message}`);
+    }
+
+    const results = (data ?? []).map((row) =>
+      this.supabaseCertificationToFormation(row as Record<string, unknown>),
+    );
+    const nextOffset = offset + results.length;
+    return {
+      source: 'supabase',
+      results,
+      nextCursor:
+        count != null && nextOffset < count ? String(nextOffset) : null,
+    };
+  }
+
+  private koumoulCertificationToFormation(
+    row: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const code = this.normalizeRncpCode(row['NUMERO_FICHE']);
+    return {
+      id: `koumoul:${code || row['ID_FICHE'] || row['_id'] || 'inconnu'}`,
+      certificationCode: code,
+      titreFormation: this.text(row['INTITULE'], 'Certification RNCP'),
+      niveauCertification: this.text(
+        row['NOMENCLATURE_EUROPE_INTITULE'],
+        'Niveau non renseigné',
+      ),
+      nomOrganisme: this.text(
+        row['CERTIFICATEURS'],
+        'Certificateur non renseigné',
+      ),
+      isCertificationActive: row['ACTIF'] === true,
+      etatFiche: this.text(row['ETAT_FICHE']),
+      dateFinEnregistrement: this.text(row['date_fin_enregistrement']),
+      prerequis: this.text(row['prerequis_entree_formation']),
+      blocsCompetences: this.splitValues(row['blocs_competences_libelles']),
+      blocsCompetencesCodes: this.splitValues(row['blocs_competences_codes']),
+      capacitesAttestees: this.text(row['CAPACITES_ATTESTEES']),
+      activitesVisees: this.text(row['ACTIVITES_VISEES']),
+      codesRome: this.splitValues(row['CODES_ROME']),
+      formacodes: this.splitValues(row['formacodes']),
+      emploisAccessibles: this.text(row['TYPE_EMPLOI_ACCESSIBLES']),
+      formationContinue: row['SI_JURY_FC'] === true,
+      vaeAccessible: row['SI_JURY_VAE'] === true || row['jury_vae'] != null,
+      alternanceAccessible: row['SI_JURY_CA'] === true,
+      statistiquesPromotions: row['statistiques_promotions'] ?? null,
+    };
+  }
+
+  private supabaseCertificationToFormation(
+    row: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const code = this.normalizeRncpCode(row['code_rncp']);
+    return {
+      id: `supabase:${row['id']}`,
+      certificationCode: code,
+      titreFormation: this.text(row['libelle_diplome'], 'Certification'),
+      niveauCertification:
+        row['niveau_europeen'] == null
+          ? 'Niveau non renseigné'
+          : `Niveau ${row['niveau_europeen']}`,
+      nomOrganisme: this.text(
+        row['certificateur'],
+        'Certificateur non renseigné',
+      ),
+      isCertificationActive:
+        this.text(row['etat_libelle']).toLowerCase() === 'publie',
+      etatFiche: this.text(row['etat_libelle']),
+      dateFinEnregistrement: this.text(row['date_maj']),
+      prerequis: '',
+      blocsCompetences: [],
+      blocsCompetencesCodes: [],
+      capacitesAttestees: '',
+      activitesVisees: '',
+      codesRome: Array.isArray(row['code_romes']) ? row['code_romes'] : [],
+      formacodes: [],
+      emploisAccessibles: '',
+      formationContinue: Number(row['accessibilite_fc'] ?? 0) > 0,
+      vaeAccessible: Number(row['accessibilite_vae'] ?? 0) > 0,
+      alternanceAccessible: Number(row['accessibilite_ca'] ?? 0) > 0,
+      statistiquesPromotions: null,
+    };
+  }
+
+  private parseFormationSource(
+    raw: string | undefined,
+  ): FormationSource | undefined {
+    if (raw == null || raw.length === 0) return undefined;
+    if (raw === 'koumoul' || raw === 'supabase') return raw;
+    throw new BadRequestException('Source de formations invalide');
+  }
+
+  private cursorFromKoumoulNext(next: string | undefined): string | null {
+    if (next == null || next.length === 0) return null;
+    try {
+      return new URL(next).searchParams.get('after');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Koumoul writes RNCP12345 while CertifInfo stores 12345.  The app only
+  // receives the normalized format, making source comparisons deterministic.
+  private normalizeRncpCode(raw: unknown): string {
+    const value = this.text(raw)
+      .replace(/^RNCP\s*/i, '')
+      .trim();
+    return value.length === 0 ? '' : `RNCP${value}`;
+  }
+
+  private text(raw: unknown, fallback = ''): string {
+    return typeof raw === 'string' && raw.trim().length > 0
+      ? raw.trim()
+      : fallback;
+  }
+
+  private splitValues(raw: unknown): string[] {
+    return this.text(raw)
+      .split(';')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
   }
 
   async updateCheminPriority(

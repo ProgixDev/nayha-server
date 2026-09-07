@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -23,6 +31,23 @@ export class ReconversionController {
     @Param('codeRome') codeRome: string,
   ) {
     return this.reconversionService.getCheminAcces(user.id, codeRome);
+  }
+
+  /**
+   * Certifications RNCP for the selected target occupation.
+   * Koumoul is the primary source; CertifInfo in Supabase is used only when
+   * Koumoul has no certification for this ROME code.
+   */
+  @Get('formations/:codeRome')
+  getFormations(
+    @Param('codeRome') codeRome: string,
+    @Query('after') after?: string,
+    @Query('source') source?: string,
+  ) {
+    return this.reconversionService.getFormationsByRome(codeRome, {
+      after,
+      source,
+    });
   }
 
   /** Persists the prerequisite the user wants to work on first. */
