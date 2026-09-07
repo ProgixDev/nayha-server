@@ -34,6 +34,10 @@ export interface PlanActionMetier {
   why: string;
   matchScore: number;
   matchLabel: string;
+  secteur?: string;
+  accesEmploi?: string;
+  formacodes?: string[];
+  riasec?: string;
 }
 
 export interface PlanActionResult {
@@ -333,7 +337,37 @@ Dans le diagnostic, elle décrit souvent une journée idéale (objectif court te
       .maybeSingle();
 
     if (error || !data) return null;
-    return data.plan_action_data ?? null;
+    const stored = data.plan_action_data ?? null;
+    if (!stored?.metiers?.length) return stored;
+    return this.ensurePlanActionComparison(stored);
+  }
+
+  private async ensurePlanActionComparison(
+    stored: PlanActionResult,
+  ): Promise<PlanActionResult> {
+    const needsEnrichment = stored.metiers.some(
+      (m) => !m.secteur && !m.accesEmploi && !m.riasec && !m.formacodes?.length,
+    );
+    if (!needsEnrichment) return stored;
+
+    const codes = stored.metiers.map((m) => m.code).filter(Boolean);
+    if (!codes.length) return stored;
+
+    const { data, error } = await this.supabase
+      .from('rome_metiers')
+      .select('code, data')
+      .in('code', codes);
+
+    if (error || !data?.length) return stored;
+
+    const byCode = new Map(data.map((row) => [row.code, row.data]));
+    return {
+      ...stored,
+      metiers: stored.metiers.map((m) => ({
+        ...m,
+        ...this.comparisonFieldsFromRome(byCode.get(m.code) ?? {}),
+      })),
+    };
   }
 
   // ─── Évaluation d'adéquation ────────────────────────────────
@@ -910,20 +944,21 @@ Choisis les 3 métiers les plus adaptés à son profil, en respectant d'abord so
     }
 
     // Validate codes + titles against actual DB data
-    const validCodes = new Map(
-      candidates.map((m) => [m.code, m.data.libelle as string]),
-    );
+    const byCode = new Map(candidates.map((m) => [m.code, m.data]));
 
     const validatedMetiers = parsed.metiers
-      .filter((m: PlanActionMetier) => validCodes.has(m.code))
+      .filter((m: PlanActionMetier) => byCode.has(m.code))
       .slice(0, 3)
       .map((m: PlanActionMetier) => {
         const score = Math.max(0, Math.min(100, Number(m.matchScore) || 0));
+        const data = byCode.get(m.code) ?? {};
         return {
-          ...m,
-          title: validCodes.get(m.code) ?? m.title, // Force DB title
+          code: m.code,
+          title: (data.libelle as string) ?? m.title,
+          why: m.why,
           matchScore: score,
           matchLabel: this.qualifyMatch(score),
+          ...this.comparisonFieldsFromRome(data),
         };
       });
 
@@ -1362,6 +1397,48 @@ Défi surmonté : "${this.safe(vie.overcomeChallenge)}"`;
       codes.add('R');
 
     return [...codes];
+  }
+
+  private comparisonFieldsFromRome(data: Record<string, any>): Partial<PlanActionMetier> {
+    const secteur = this.dbText(
+      data.domaineProfessionnel?.libelle ||
+        data.domaineProfessionnel?.grandDomaine?.libelle,
+    );
+    const accesEmploi = this.dbText(data.accesEmploi);
+    const formacodes = (data.formacodes || [])
+      .map((f: { libelle?: string }) => this.dbText(f?.libelle))
+      .filter(Boolean);
+    const riasec = [data.riasecMajeur, data.riasecMineur]
+      .map((v) => this.dbText(v))
+      .filter(Boolean)
+      .join(' / ');
+
+    return {
+      ...(secteur ? { secteur } : {}),
+      ...(accesEmploi ? { accesEmploi: this.clip(accesEmploi, 280) } : {}),
+      ...(formacodes.length ? { formacodes } : {}),
+      ...(riasec ? { riasec } : {}),
+    };
+  }
+
+  private dbText(raw: unknown): string {
+    const text = String(raw ?? '').trim();
+    if (
+      !text ||
+      text.toUpperCase() === 'N/A' ||
+      text.toLowerCase() === 'non renseigné' ||
+      text.toLowerCase() === 'information publique non renseignée pour ce métier'
+    ) {
+      return '';
+    }
+    return text;
+  }
+
+  private clip(text: string, max: number): string {
+    if (text.length <= max) return text;
+    const cut = text.slice(0, max);
+    const lastSpace = cut.lastIndexOf(' ');
+    return `${(lastSpace > 80 ? cut.slice(0, lastSpace) : cut).trim()}…`;
   }
 
   private qualifyMatch(score: number): string {
