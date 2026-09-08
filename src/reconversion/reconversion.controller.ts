@@ -51,6 +51,15 @@ export class ReconversionController {
     });
   }
 
+  /** Returns full detail for a single training offer by its composite ID. */
+  @Get('formations/:codeRome/detail')
+  getFormationDetail(
+    @Param('codeRome') codeRome: string,
+    @Query('id') formationId?: string,
+  ) {
+    return this.reconversionService.getFormationDetail(codeRome, formationId);
+  }
+
   /**
    * Returns the user's saved funding-plan choices for the given ROME code,
    * plus the formation selected during the formations step (if any).
