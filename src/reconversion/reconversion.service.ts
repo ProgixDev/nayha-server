@@ -66,6 +66,23 @@ type ImmersionStatus =
 type ImmersionOutcome =
   'undecided' | 'confirmed' | 'toClarify' | 'notConfirmed';
 
+export interface FinancementJourney {
+  statut?: string;
+  tempsTravail?: string;
+  coutFormation?: number;
+  statutPrixFormation?: string;
+  soldeCpf?: number;
+  isCpfReel?: boolean;
+  ancienneteAnnees?: number;
+  demarcheFinancement?: string;
+  maintienRevenus?: string;
+  dureeAutonomieMois?: number;
+  fraisAnnexes?: string[];
+  alternancePreference?: string;
+  piecesCochees?: string[];
+  updatedAt?: string;
+}
+
 export interface ImmersionJourney {
   intent: ImmersionIntent;
   duration: string;
@@ -229,6 +246,82 @@ export class ReconversionService {
   }
 
   /**
+   * Returns full detail for a single training offer.
+   * The formationId encodes the source: "apprentissage:{cleMin}",
+   * "koumoul:{rncpOrId}", or "supabase:{numericId}".
+   * Use ?id= query param (URL-encoded) to avoid path conflicts with special
+   * characters such as "#" present in cle_ministere_educatif values.
+   */
+  async getFormationDetail(
+    rawCodeRome: string,
+    formationId: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    if (!formationId || formationId.trim().length === 0) {
+      throw new BadRequestException('Identifiant de formation requis');
+    }
+
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const colonIndex = formationId.indexOf(':');
+
+    if (colonIndex <= 0) {
+      throw new BadRequestException('Identifiant de formation invalide');
+    }
+
+    const source = formationId.slice(0, colonIndex);
+    const actualId = formationId.slice(colonIndex + 1).trim();
+
+    if (!actualId) {
+      throw new BadRequestException('Identifiant de formation invalide');
+    }
+
+    switch (source) {
+      case 'apprentissage':
+        return this.getApprentissageFormationDetail(codeRome, actualId);
+      case 'koumoul':
+        return this.getKoumoulFormationDetail(codeRome, actualId);
+      case 'supabase':
+        return this.getSupabaseFormationDetail(actualId);
+      default:
+        throw new BadRequestException('Source de formation invalide');
+    }
+  }
+
+  /**
+   * Returns the user's saved financement journey for the given ROME code,
+   * along with the formation selected during the formations step (if any).
+   * The client uses this to restore previous choices and pre-fill fields.
+   */
+  async getFinancement(userId: string, rawCodeRome: string) {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select(
+        'reconversion_financement_journey, reconversion_formations_journey',
+      )
+      .eq('id', userId)
+      .single();
+
+    if (error || !profile) {
+      throw new NotFoundException('Profil utilisateur introuvable');
+    }
+
+    const formationsJourney = this.readFormationsJourney(
+      profile.reconversion_formations_journey,
+      codeRome,
+    );
+
+    return {
+      codeRome,
+      selectedFormationId: formationsJourney.selectedFormationId ?? null,
+      journey: this.readFinancementJourney(
+        profile.reconversion_financement_journey,
+        codeRome,
+      ),
+    };
+  }
+
+  /**
    * Returns real training offers and certifications from the official
    * Apprentissage API (with Koumoul and Supabase fallbacks).
    */
@@ -388,6 +481,31 @@ export class ReconversionService {
         ? `Prochaine session : ${new Date(sessions[0].debut).toLocaleDateString('fr-FR')}`
         : 'Sessions régulières';
 
+    const now = new Date();
+    const normalizedSessions = sessions
+      .filter(
+        (s: any) => s.debut == null || new Date(s.debut) >= now,
+      )
+      .map((s: any) => {
+        const sAdresse = s.lieu?.adresse || {};
+        return {
+          debut: s.debut
+            ? new Date(s.debut).toLocaleDateString('fr-FR')
+            : null,
+          fin: s.fin
+            ? new Date(s.fin).toLocaleDateString('fr-FR')
+            : null,
+          lieu:
+            [sAdresse.label, sAdresse.commune?.nom]
+              .filter(Boolean)
+              .join(', ') || null,
+          modalite:
+            s.modalite?.entierement_a_distance === true
+              ? 'À distance'
+              : 'Présentiel / Mixte',
+        };
+      });
+
     // Lieu
     const lieuStr =
       [adresse.label, adresse.code_postal, adresse.commune?.nom]
@@ -422,6 +540,7 @@ export class ReconversionService {
         : 'Présentiel / Mixte',
       lieu: lieuStr,
       prochaineSession: nextSession,
+      sessions: normalizedSessions,
       contactEmail: contact.email || org.contacts?.[0]?.email || '',
       contactTelephone: contact.telephone || '',
       contenu: contenu.contenu || '',
@@ -506,6 +625,138 @@ export class ReconversionService {
       nextCursor:
         count != null && nextOffset < count ? String(nextOffset) : null,
     };
+  }
+
+  /**
+   * Fetches a single Apprentissage formation by cle_ministere_educatif.
+   * Paginates through results (up to 5 pages) until the record is found.
+   */
+  private async getApprentissageFormationDetail(
+    codeRome: string,
+    cleMin: string,
+  ): Promise<Record<string, unknown>> {
+    if (!this.apprentissageApiKey) {
+      throw new NotFoundException('Détail de formation indisponible');
+    }
+
+    const pageSize = ReconversionService.formationsPageSize;
+    const maxPages = 5;
+
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+      const query = new URLSearchParams({
+        romes: codeRome,
+        page_size: String(pageSize),
+        page_index: String(pageIndex),
+        include_archived: 'false',
+      });
+
+      const response = await fetch(
+        `${ReconversionService.apprentissageApiUrl}?${query.toString()}`,
+        { headers: { Authorization: `Bearer ${this.apprentissageApiKey}` } },
+      );
+
+      if (!response.ok) break;
+
+      const payload = (await response.json()) as Record<string, any>;
+      const data = Array.isArray(payload.data) ? payload.data : [];
+      const pageCount: number = payload.pagination?.page_count ?? 1;
+
+      const match = data.find(
+        (item: Record<string, any>) =>
+          (item.identifiant?.cle_ministere_educatif ?? '') === cleMin,
+      );
+
+      if (match) return this.apprentissageToFormation(match);
+      if (pageIndex + 1 >= pageCount) break;
+    }
+
+    throw new NotFoundException('Formation introuvable');
+  }
+
+  /**
+   * Fetches a single Koumoul certification by RNCP code or internal ID.
+   */
+  private async getKoumoulFormationDetail(
+    codeRome: string,
+    koumoulId: string,
+  ): Promise<Record<string, unknown>> {
+    const isRncp = /^RNCP\d+$/i.test(koumoulId);
+
+    if (isRncp) {
+      const rawNumber = koumoulId.replace(/^RNCP/i, '');
+      const query = new URLSearchParams({
+        NUMERO_FICHE_search: rawNumber,
+        size: String(ReconversionService.formationsPageSize),
+      });
+
+      const response = await fetch(
+        `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+      );
+
+      if (!response.ok) throw new NotFoundException('Formation introuvable');
+
+      const payload = (await response.json()) as KoumoulPage;
+      const results = Array.isArray(payload.results) ? payload.results : [];
+      const match = results.find(
+        (row) =>
+          this.normalizeRncpCode(row['NUMERO_FICHE']) ===
+          koumoulId.toUpperCase(),
+      );
+
+      if (!match) throw new NotFoundException('Formation introuvable');
+      return this.koumoulCertificationToFormation(match);
+    }
+
+    // Fallback: search by ROME and match by Koumoul internal ID
+    const query = new URLSearchParams({
+      CODES_ROME_search: codeRome,
+      ACTIF_eq: 'true',
+      size: String(ReconversionService.formationsPageSize),
+    });
+
+    const response = await fetch(
+      `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+    );
+
+    if (!response.ok) throw new NotFoundException('Formation introuvable');
+
+    const payload = (await response.json()) as KoumoulPage;
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    const match = results.find(
+      (row) =>
+        String(row['ID_FICHE'] ?? row['_id'] ?? '') === koumoulId,
+    );
+
+    if (!match) throw new NotFoundException('Formation introuvable');
+    return this.koumoulCertificationToFormation(match);
+  }
+
+  /**
+   * Fetches a single certification from the local Supabase table by numeric ID.
+   */
+  private async getSupabaseFormationDetail(
+    id: string,
+  ): Promise<Record<string, unknown>> {
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isSafeInteger(numericId) || numericId <= 0) {
+      throw new BadRequestException('Identifiant de formation invalide');
+    }
+
+    const { data, error } = await this.supabase
+      .from('certifications')
+      .select(
+        'id, libelle_diplome, niveau_europeen, code_rncp, code_romes, certificateur, etat_libelle, accessibilite_vae, accessibilite_fc, accessibilite_ca, date_maj',
+      )
+      .eq('id', numericId)
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('Formation introuvable');
+    }
+
+    return this.supabaseCertificationToFormation(
+      data as Record<string, unknown>,
+    );
   }
 
   private koumoulCertificationToFormation(
@@ -663,7 +914,7 @@ export class ReconversionService {
 
     if (updateError) {
       throw new Error(
-        `Impossible d’enregistrer la priorité: ${updateError.message}`,
+        `Impossible d'enregistrer la priorité: ${updateError.message}`,
       );
     }
 
@@ -675,7 +926,7 @@ export class ReconversionService {
     const { data: profile, error } = await this.supabase
       .from('user_profiles')
       .select(
-        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey',
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey',
       )
       .eq('id', userId)
       .single();
@@ -698,6 +949,10 @@ export class ReconversionService {
         profile.reconversion_immersion_journey,
         codeRome,
       ),
+      financement: this.readFinancementJourney(
+        profile.reconversion_financement_journey,
+        codeRome,
+      ),
     };
   }
 
@@ -706,7 +961,12 @@ export class ReconversionService {
     rawCodeRome: string,
     dto: UpdateReconversionJourneyDto,
   ) {
-    if (dto.chemin == null && dto.formations == null && dto.immersion == null) {
+    if (
+      dto.chemin == null &&
+      dto.formations == null &&
+      dto.immersion == null &&
+      dto.financement == null
+    ) {
       throw new BadRequestException('Aucune donnée de parcours à enregistrer');
     }
 
@@ -714,7 +974,7 @@ export class ReconversionService {
     const { data: profile, error: readError } = await this.supabase
       .from('user_profiles')
       .select(
-        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey',
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey',
       )
       .eq('id', userId)
       .single();
@@ -731,6 +991,9 @@ export class ReconversionService {
     );
     const immersionJourneys = this.readAllSectionJourneys(
       profile.reconversion_immersion_journey,
+    );
+    const financementJourneys = this.readAllSectionJourneys(
+      profile.reconversion_financement_journey,
     );
     const updatedAt = new Date().toISOString();
 
@@ -755,6 +1018,13 @@ export class ReconversionService {
         updatedAt,
       );
     }
+    if (dto.financement != null) {
+      financementJourneys[codeRome] = this.mergeFinancementJourney(
+        financementJourneys[codeRome],
+        dto.financement,
+        updatedAt,
+      );
+    }
 
     const { error: updateError } = await this.supabase
       .from('user_profiles')
@@ -762,12 +1032,13 @@ export class ReconversionService {
         reconversion_chemin_journey: cheminJourneys,
         reconversion_formations_journey: formationsJourneys,
         reconversion_immersion_journey: immersionJourneys,
+        reconversion_financement_journey: financementJourneys,
       })
       .eq('id', userId);
 
     if (updateError) {
       throw new Error(
-        `Impossible d’enregistrer le parcours: ${updateError.message}`,
+        `Impossible d'enregistrer le parcours: ${updateError.message}`,
       );
     }
 
@@ -776,6 +1047,7 @@ export class ReconversionService {
       chemin: this.readCheminJourney(cheminJourneys, codeRome),
       formations: this.readFormationsJourney(formationsJourneys, codeRome),
       immersion: this.readImmersionJourney(immersionJourneys, codeRome),
+      financement: this.readFinancementJourney(financementJourneys, codeRome),
     };
   }
 
@@ -802,7 +1074,7 @@ export class ReconversionService {
     if (this.has(patch, 'selectedVoieId')) {
       const voieId = this.optionalVoieId(patch.selectedVoieId);
       if (voieId == null) {
-        throw new BadRequestException('Voie d’accès invalide');
+        throw new BadRequestException("Voie d'accès invalide");
       }
       next.selectedVoieId = voieId;
     }
@@ -909,7 +1181,7 @@ export class ReconversionService {
         'completed',
       ] as const,
       'notStarted',
-      'statut d’immersion',
+      "statut d'immersion",
     );
 
     return {
@@ -917,7 +1189,7 @@ export class ReconversionService {
         raw.intent,
         ['undecided', 'yes', 'later', 'no'] as const,
         'undecided',
-        'intention d’immersion',
+        "intention d'immersion",
       ),
       duration: this.text(raw.duration).slice(0, 100),
       criteria: this.stringArray(raw.criteria, 10),
@@ -928,7 +1200,7 @@ export class ReconversionService {
         raw.outcome,
         ['undecided', 'confirmed', 'toClarify', 'notConfirmed'] as const,
         'undecided',
-        'résultat d’immersion',
+        "résultat d'immersion",
       ),
       highlights: this.text(raw.highlights).slice(0, 2000),
       concerns: this.text(raw.concerns).slice(0, 2000),
@@ -954,7 +1226,7 @@ export class ReconversionService {
         patch.intent,
         ['undecided', 'yes', 'later', 'no'] as const,
         next.intent,
-        'intention d’immersion',
+        "intention d'immersion",
       );
     }
     if (this.has(patch, 'duration')) {
@@ -974,7 +1246,7 @@ export class ReconversionService {
         patch.outcome,
         ['undecided', 'confirmed', 'toClarify', 'notConfirmed'] as const,
         next.outcome,
-        'résultat d’immersion',
+        "résultat d'immersion",
       );
     }
     if (this.has(patch, 'highlights')) {
@@ -1011,7 +1283,7 @@ export class ReconversionService {
           'completed',
         ] as const,
         next.status,
-        'statut d’immersion',
+        "statut d'immersion",
       );
     }
 
@@ -1023,6 +1295,307 @@ export class ReconversionService {
     if (next.isCompleted) next.status = 'completed';
     next.updatedAt = updatedAt;
     return next;
+  }
+
+  private readFinancementJourney(
+    value: unknown,
+    codeRome: string,
+  ): FinancementJourney {
+    const all = this.readAllSectionJourneys(value);
+    return this.normaliseFinancementJourney(all[codeRome]);
+  }
+
+  private static readonly STATUT_ACTUEL = [
+    'salarieeCdi',
+    'salarieeCdd',
+    'demandeuseIndemnisee',
+    'sansActivite',
+    'independante',
+    'secteurPublic',
+  ] as const;
+
+  private static readonly STATUT_PRIX = [
+    'monCompteFormation',
+    'surDevis',
+    'estimation',
+  ] as const;
+
+  private static readonly DEMARCHE_FINANCEMENT = [
+    'aucune',
+    'ptpEnCours',
+    'franceTravailRegion',
+    'devisOrganisme',
+    'autre',
+  ] as const;
+
+  private static readonly MAINTIEN_REVENUS = [
+    'salairePtp',
+    'arefFranceTravail',
+    'remunerationRegion',
+    'epargneOuAutre',
+    'aDeterminer',
+  ] as const;
+
+  private static readonly ALTERNANCE_PREFERENCE = [
+    'tresOuverte',
+    'possible',
+    'non',
+  ] as const;
+
+  private static readonly FRAIS_ANNEXE_TYPES = [
+    'transport',
+    'gardeEnfants',
+    'materiel',
+    'hebergement',
+  ] as const;
+
+  private normaliseFinancementJourney(value: unknown): FinancementJourney {
+    const raw = this.asRecord(value);
+
+    const coutFormation =
+      typeof raw.coutFormation === 'number' &&
+      Number.isFinite(raw.coutFormation) &&
+      raw.coutFormation >= 0
+        ? Math.round(raw.coutFormation * 100) / 100
+        : undefined;
+
+    const soldeCpf =
+      typeof raw.soldeCpf === 'number' &&
+      Number.isFinite(raw.soldeCpf) &&
+      raw.soldeCpf >= 0
+        ? Math.round(raw.soldeCpf * 100) / 100
+        : undefined;
+
+    const ancienneteAnnees =
+      typeof raw.ancienneteAnnees === 'number' &&
+      Number.isInteger(raw.ancienneteAnnees) &&
+      raw.ancienneteAnnees >= 0
+        ? raw.ancienneteAnnees
+        : undefined;
+
+    const dureeAutonomieMois =
+      typeof raw.dureeAutonomieMois === 'number' &&
+      Number.isInteger(raw.dureeAutonomieMois) &&
+      raw.dureeAutonomieMois >= 0
+        ? raw.dureeAutonomieMois
+        : undefined;
+
+    const rawFrais = Array.isArray(raw.fraisAnnexes) ? raw.fraisAnnexes : [];
+    const fraisAnnexes = rawFrais.filter(
+      (f): f is string =>
+        typeof f === 'string' &&
+        (ReconversionService.FRAIS_ANNEXE_TYPES as readonly string[]).includes(
+          f,
+        ),
+    );
+
+    const rawPieces = Array.isArray(raw.piecesCochees) ? raw.piecesCochees : [];
+    const piecesCochees = rawPieces
+      .filter((p): p is string => typeof p === 'string')
+      .map((p) => p.trim().slice(0, 200))
+      .filter((p) => p.length > 0)
+      .slice(0, 50);
+
+    return {
+      statut: this.optionalEnum(
+        raw.statut,
+        ReconversionService.STATUT_ACTUEL as readonly string[],
+      ),
+      tempsTravail: this.optionalEnum(raw.tempsTravail, [
+        'tempsPlein',
+        'tempsPartiel',
+      ]),
+      coutFormation,
+      statutPrixFormation: this.optionalEnum(
+        raw.statutPrixFormation,
+        ReconversionService.STATUT_PRIX as readonly string[],
+      ),
+      soldeCpf,
+      isCpfReel:
+        typeof raw.isCpfReel === 'boolean' ? raw.isCpfReel : undefined,
+      ancienneteAnnees,
+      demarcheFinancement: this.optionalEnum(
+        raw.demarcheFinancement,
+        ReconversionService.DEMARCHE_FINANCEMENT as readonly string[],
+      ),
+      maintienRevenus: this.optionalEnum(
+        raw.maintienRevenus,
+        ReconversionService.MAINTIEN_REVENUS as readonly string[],
+      ),
+      dureeAutonomieMois,
+      fraisAnnexes: fraisAnnexes.length > 0 ? fraisAnnexes : undefined,
+      alternancePreference: this.optionalEnum(
+        raw.alternancePreference,
+        ReconversionService.ALTERNANCE_PREFERENCE as readonly string[],
+      ),
+      piecesCochees: piecesCochees.length > 0 ? piecesCochees : undefined,
+      updatedAt: this.optionalText(raw.updatedAt, 40),
+    };
+  }
+
+  private mergeFinancementJourney(
+    current: unknown,
+    patch: Record<string, unknown>,
+    updatedAt: string,
+  ): FinancementJourney {
+    const next = this.normaliseFinancementJourney(current);
+
+    if (this.has(patch, 'statut')) {
+      const v = this.optionalEnum(
+        patch.statut,
+        ReconversionService.STATUT_ACTUEL as readonly string[],
+      );
+      if (v == null && patch.statut != null) {
+        throw new BadRequestException('Statut professionnel invalide');
+      }
+      next.statut = v;
+    }
+    if (this.has(patch, 'tempsTravail')) {
+      const v = this.optionalEnum(patch.tempsTravail, [
+        'tempsPlein',
+        'tempsPartiel',
+      ]);
+      if (v == null && patch.tempsTravail != null) {
+        throw new BadRequestException('Type de temps de travail invalide');
+      }
+      next.tempsTravail = v;
+    }
+    if (this.has(patch, 'coutFormation')) {
+      if (
+        patch.coutFormation != null &&
+        (typeof patch.coutFormation !== 'number' ||
+          !Number.isFinite(patch.coutFormation) ||
+          patch.coutFormation < 0)
+      ) {
+        throw new BadRequestException('Coût de formation invalide');
+      }
+      next.coutFormation =
+        patch.coutFormation != null
+          ? Math.round((patch.coutFormation as number) * 100) / 100
+          : undefined;
+    }
+    if (this.has(patch, 'statutPrixFormation')) {
+      const v = this.optionalEnum(
+        patch.statutPrixFormation,
+        ReconversionService.STATUT_PRIX as readonly string[],
+      );
+      if (v == null && patch.statutPrixFormation != null) {
+        throw new BadRequestException('Statut du prix de formation invalide');
+      }
+      next.statutPrixFormation = v;
+    }
+    if (this.has(patch, 'soldeCpf')) {
+      if (
+        patch.soldeCpf != null &&
+        (typeof patch.soldeCpf !== 'number' ||
+          !Number.isFinite(patch.soldeCpf) ||
+          patch.soldeCpf < 0)
+      ) {
+        throw new BadRequestException('Solde CPF invalide');
+      }
+      next.soldeCpf =
+        patch.soldeCpf != null
+          ? Math.round((patch.soldeCpf as number) * 100) / 100
+          : undefined;
+    }
+    if (this.has(patch, 'isCpfReel')) {
+      next.isCpfReel = this.booleanValue(patch.isCpfReel, 'isCpfReel');
+    }
+    if (this.has(patch, 'ancienneteAnnees')) {
+      if (
+        patch.ancienneteAnnees != null &&
+        (typeof patch.ancienneteAnnees !== 'number' ||
+          !Number.isInteger(patch.ancienneteAnnees) ||
+          (patch.ancienneteAnnees as number) < 0)
+      ) {
+        throw new BadRequestException('Ancienneté invalide');
+      }
+      next.ancienneteAnnees =
+        patch.ancienneteAnnees != null
+          ? (patch.ancienneteAnnees as number)
+          : undefined;
+    }
+    if (this.has(patch, 'demarcheFinancement')) {
+      const v = this.optionalEnum(
+        patch.demarcheFinancement,
+        ReconversionService.DEMARCHE_FINANCEMENT as readonly string[],
+      );
+      if (v == null && patch.demarcheFinancement != null) {
+        throw new BadRequestException('Démarche de financement invalide');
+      }
+      next.demarcheFinancement = v;
+    }
+    if (this.has(patch, 'maintienRevenus')) {
+      const v = this.optionalEnum(
+        patch.maintienRevenus,
+        ReconversionService.MAINTIEN_REVENUS as readonly string[],
+      );
+      if (v == null && patch.maintienRevenus != null) {
+        throw new BadRequestException('Maintien des revenus invalide');
+      }
+      next.maintienRevenus = v;
+    }
+    if (this.has(patch, 'dureeAutonomieMois')) {
+      if (
+        patch.dureeAutonomieMois != null &&
+        (typeof patch.dureeAutonomieMois !== 'number' ||
+          !Number.isInteger(patch.dureeAutonomieMois) ||
+          (patch.dureeAutonomieMois as number) < 0)
+      ) {
+        throw new BadRequestException('Durée d\'autonomie invalide');
+      }
+      next.dureeAutonomieMois =
+        patch.dureeAutonomieMois != null
+          ? (patch.dureeAutonomieMois as number)
+          : undefined;
+    }
+    if (this.has(patch, 'fraisAnnexes')) {
+      if (!Array.isArray(patch.fraisAnnexes)) {
+        throw new BadRequestException('Frais annexes invalides');
+      }
+      next.fraisAnnexes = (patch.fraisAnnexes as unknown[])
+        .filter(
+          (f): f is string =>
+            typeof f === 'string' &&
+            (
+              ReconversionService.FRAIS_ANNEXE_TYPES as readonly string[]
+            ).includes(f),
+        )
+        .slice(0, 10);
+    }
+    if (this.has(patch, 'alternancePreference')) {
+      const v = this.optionalEnum(
+        patch.alternancePreference,
+        ReconversionService.ALTERNANCE_PREFERENCE as readonly string[],
+      );
+      if (v == null && patch.alternancePreference != null) {
+        throw new BadRequestException('Préférence alternance invalide');
+      }
+      next.alternancePreference = v;
+    }
+    if (this.has(patch, 'piecesCochees')) {
+      if (!Array.isArray(patch.piecesCochees)) {
+        throw new BadRequestException('Pièces cochées invalides');
+      }
+      next.piecesCochees = (patch.piecesCochees as unknown[])
+        .filter((p): p is string => typeof p === 'string')
+        .map((p) => p.trim().slice(0, 200))
+        .filter((p) => p.length > 0)
+        .slice(0, 50);
+    }
+
+    next.updatedAt = updatedAt;
+    return next;
+  }
+
+  private optionalEnum(
+    value: unknown,
+    allowed: readonly string[],
+  ): string | undefined {
+    if (value == null) return undefined;
+    return typeof value === 'string' && allowed.includes(value)
+      ? value
+      : undefined;
   }
 
   private readAllSectionJourneys(value: unknown): Record<string, any> {
@@ -1125,7 +1698,7 @@ export class ReconversionService {
           certification,
           sourceReglementaire
             ? 'Le référentiel ROME indique explicitement cette exigence comme obligatoire pour accéder au métier.'
-            : 'Niveau d’accès ou certification fréquemment attendu pour ce métier. À confirmer selon l’employeur et le poste visé.',
+            : "Niveau d'accès ou certification fréquemment attendu pour ce métier. À confirmer selon l'employeur et le poste visé.",
           sourceReglementaire,
         ),
       );
@@ -1254,7 +1827,7 @@ export class ReconversionService {
       normalized.includes('sans obligation');
 
     return !isNegated && /\bobligatoire(?:s|ment)?\b/.test(normalized)
-      ? `ROME — Accès à l’emploi : ${access}`
+      ? `ROME — Accès à l'emploi : ${access}`
       : undefined;
   }
 
@@ -1269,7 +1842,7 @@ export class ReconversionService {
       normalized.includes('prestation de bilan') ||
       normalized.includes('orientation professionnelle')
     ) {
-      return 'Maîtriser la conduite d’entretiens et l’analyse de parcours';
+      return "Maîtriser la conduite d'entretiens et l'analyse de parcours";
     }
     if (normalized.includes('bilan de competences')) {
       return 'Maîtriser la méthodologie du bilan de compétences';
@@ -1278,7 +1851,7 @@ export class ReconversionService {
       normalized.includes('passation de tests') ||
       normalized.includes('outils d evaluation')
     ) {
-      return 'Savoir utiliser et interpréter des outils d’évaluation';
+      return "Savoir utiliser et interpréter des outils d'évaluation";
     }
     if (
       normalized.includes('bilan') ||

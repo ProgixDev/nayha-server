@@ -17,4 +17,8 @@ export class UpdateReconversionJourneyDto {
   @IsOptional()
   @IsObject()
   immersion?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  financement?: Record<string, unknown>;
 }

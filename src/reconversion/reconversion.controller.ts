@@ -51,6 +51,19 @@ export class ReconversionController {
     });
   }
 
+  /**
+   * Returns the user's saved funding-plan choices for the given ROME code,
+   * plus the formation selected during the formations step (if any).
+   * The mobile client uses this to pre-fill and restore the financement screen.
+   */
+  @Get('financement/:codeRome')
+  getFinancement(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+  ) {
+    return this.reconversionService.getFinancement(user.id, codeRome);
+  }
+
   /** Restores deliberate choices made in formation exploration and immersion. */
   @Get('journey/:codeRome')
   getJourney(
