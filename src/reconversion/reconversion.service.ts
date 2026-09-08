@@ -45,6 +45,7 @@ export interface FormationsJourney {
   dismissedFormationIds: string[];
   notesAvis: Record<string, 'me_correspond' | 'a_verifier'>;
   selectedFormationId?: string;
+  selectedFormationTitre?: string;
   updatedAt?: string;
 }
 
@@ -314,6 +315,7 @@ export class ReconversionService {
     return {
       codeRome,
       selectedFormationId: formationsJourney.selectedFormationId ?? null,
+      selectedFormationTitre: formationsJourney.selectedFormationTitre ?? null,
       journey: this.readFinancementJourney(
         profile.reconversion_financement_journey,
         codeRome,
@@ -1107,6 +1109,7 @@ export class ReconversionService {
       dismissedFormationIds: this.stringArray(raw.dismissedFormationIds, 100),
       notesAvis,
       selectedFormationId: this.optionalText(raw.selectedFormationId, 300),
+      selectedFormationTitre: this.optionalText(raw.selectedFormationTitre, 300),
       updatedAt: this.optionalText(raw.updatedAt, 40),
     };
   }
@@ -1151,6 +1154,12 @@ export class ReconversionService {
     if (this.has(patch, 'selectedFormationId')) {
       next.selectedFormationId = this.optionalText(
         patch.selectedFormationId,
+        300,
+      );
+    }
+    if (this.has(patch, 'selectedFormationTitre')) {
+      next.selectedFormationTitre = this.optionalText(
+        patch.selectedFormationTitre,
         300,
       );
     }
