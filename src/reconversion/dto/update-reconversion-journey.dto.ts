@@ -8,6 +8,10 @@ import { IsObject, IsOptional } from 'class-validator';
 export class UpdateReconversionJourneyDto {
   @IsOptional()
   @IsObject()
+  chemin?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
   formations?: Record<string, unknown>;
 
   @IsOptional()

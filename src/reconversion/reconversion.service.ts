@@ -48,6 +48,12 @@ export interface FormationsJourney {
   updatedAt?: string;
 }
 
+export interface CheminJourney {
+  selectedVoieId?: string;
+  prioritePrerequisId?: string;
+  updatedAt?: string;
+}
+
 type ImmersionIntent = 'undecided' | 'yes' | 'later' | 'no';
 type ImmersionStatus =
   | 'notStarted'
@@ -178,7 +184,7 @@ export class ReconversionService {
       any
     > | null;
     const certifications = (certificationsResult.data ?? []) as Certification[];
-    const storedJourney = this.readJourney(
+    const storedJourney = this.readCheminJourney(
       profileResult.data.reconversion_chemin_journey,
       codeRome,
     );
@@ -211,6 +217,7 @@ export class ReconversionService {
           })),
       },
       prioritePrerequisId: storedJourney?.prioritePrerequisId ?? null,
+      selectedVoieId: storedJourney?.selectedVoieId ?? null,
       generatedAt: new Date().toISOString(),
     };
   }
@@ -457,9 +464,15 @@ export class ReconversionService {
       throw new NotFoundException('Profil utilisateur introuvable');
     }
 
-    const journey = this.readAllJourneys(profile.reconversion_chemin_journey);
+    const journey = this.readAllSectionJourneys(
+      profile.reconversion_chemin_journey,
+    );
     const updatedAt = new Date().toISOString();
-    journey[codeRome] = { prioritePrerequisId: prerequisId.trim(), updatedAt };
+    journey[codeRome] = {
+      ...this.normaliseCheminJourney(journey[codeRome]),
+      prioritePrerequisId: prerequisId.trim(),
+      updatedAt,
+    };
 
     const { error: updateError } = await this.supabase
       .from('user_profiles')
@@ -479,7 +492,9 @@ export class ReconversionService {
     const codeRome = this.normalizeCodeRome(rawCodeRome);
     const { data: profile, error } = await this.supabase
       .from('user_profiles')
-      .select('reconversion_formations_journey, reconversion_immersion_journey')
+      .select(
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey',
+      )
       .eq('id', userId)
       .single();
 
@@ -489,6 +504,10 @@ export class ReconversionService {
 
     return {
       codeRome,
+      chemin: this.readCheminJourney(
+        profile.reconversion_chemin_journey,
+        codeRome,
+      ),
       formations: this.readFormationsJourney(
         profile.reconversion_formations_journey,
         codeRome,
@@ -505,14 +524,16 @@ export class ReconversionService {
     rawCodeRome: string,
     dto: UpdateReconversionJourneyDto,
   ) {
-    if (dto.formations == null && dto.immersion == null) {
+    if (dto.chemin == null && dto.formations == null && dto.immersion == null) {
       throw new BadRequestException('Aucune donnée de parcours à enregistrer');
     }
 
     const codeRome = this.normalizeCodeRome(rawCodeRome);
     const { data: profile, error: readError } = await this.supabase
       .from('user_profiles')
-      .select('reconversion_formations_journey, reconversion_immersion_journey')
+      .select(
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey',
+      )
       .eq('id', userId)
       .single();
 
@@ -520,6 +541,9 @@ export class ReconversionService {
       throw new NotFoundException('Profil utilisateur introuvable');
     }
 
+    const cheminJourneys = this.readAllSectionJourneys(
+      profile.reconversion_chemin_journey,
+    );
     const formationsJourneys = this.readAllSectionJourneys(
       profile.reconversion_formations_journey,
     );
@@ -528,6 +552,13 @@ export class ReconversionService {
     );
     const updatedAt = new Date().toISOString();
 
+    if (dto.chemin != null) {
+      cheminJourneys[codeRome] = this.mergeCheminJourney(
+        cheminJourneys[codeRome],
+        dto.chemin,
+        updatedAt,
+      );
+    }
     if (dto.formations != null) {
       formationsJourneys[codeRome] = this.mergeFormationsJourney(
         formationsJourneys[codeRome],
@@ -546,6 +577,7 @@ export class ReconversionService {
     const { error: updateError } = await this.supabase
       .from('user_profiles')
       .update({
+        reconversion_chemin_journey: cheminJourneys,
         reconversion_formations_journey: formationsJourneys,
         reconversion_immersion_journey: immersionJourneys,
       })
@@ -559,9 +591,41 @@ export class ReconversionService {
 
     return {
       codeRome,
+      chemin: this.readCheminJourney(cheminJourneys, codeRome),
       formations: this.readFormationsJourney(formationsJourneys, codeRome),
       immersion: this.readImmersionJourney(immersionJourneys, codeRome),
     };
+  }
+
+  private readCheminJourney(value: unknown, codeRome: string): CheminJourney {
+    const all = this.readAllSectionJourneys(value);
+    return this.normaliseCheminJourney(all[codeRome]);
+  }
+
+  private normaliseCheminJourney(value: unknown): CheminJourney {
+    const raw = this.asRecord(value);
+    return {
+      selectedVoieId: this.optionalVoieId(raw.selectedVoieId),
+      prioritePrerequisId: this.optionalText(raw.prioritePrerequisId, 200),
+      updatedAt: this.optionalText(raw.updatedAt, 40),
+    };
+  }
+
+  private mergeCheminJourney(
+    current: unknown,
+    patch: Record<string, unknown>,
+    updatedAt: string,
+  ): CheminJourney {
+    const next = this.normaliseCheminJourney(current);
+    if (this.has(patch, 'selectedVoieId')) {
+      const voieId = this.optionalVoieId(patch.selectedVoieId);
+      if (voieId == null) {
+        throw new BadRequestException('Voie d’accès invalide');
+      }
+      next.selectedVoieId = voieId;
+    }
+    next.updatedAt = updatedAt;
+    return next;
   }
 
   private readFormationsJourney(
@@ -811,6 +875,19 @@ export class ReconversionService {
   private optionalText(value: unknown, maxLength: number): string | undefined {
     const text = this.text(value).slice(0, maxLength);
     return text.length > 0 ? text : undefined;
+  }
+
+  private optionalVoieId(value: unknown): string | undefined {
+    const voieId = this.optionalText(value, 80);
+    return voieId != null &&
+      [
+        'voie_formation',
+        'voie_vae',
+        'voie_renforcement',
+        'voie_directe',
+      ].includes(voieId)
+      ? voieId
+      : undefined;
   }
 
   private booleanValue(value: unknown, label: string): boolean {
@@ -1065,19 +1142,5 @@ export class ReconversionService {
 
   private slug(value: string): string {
     return this.normalized(value).replace(/\s+/g, '-').slice(0, 120);
-  }
-
-  private readJourney(value: unknown, codeRome: string) {
-    return this.readAllJourneys(value)[codeRome];
-  }
-
-  private readAllJourneys(
-    value: unknown,
-  ): Record<string, { prioritePrerequisId: string; updatedAt: string }> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    return value as Record<
-      string,
-      { prioritePrerequisId: string; updatedAt: string }
-    >;
   }
 }
