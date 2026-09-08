@@ -26,7 +26,7 @@ interface Certification {
   accessibilite_ca: number | null;
 }
 
-type FormationSource = 'koumoul' | 'supabase';
+type FormationSource = 'apprentissage' | 'koumoul' | 'supabase';
 
 interface KoumoulPage {
   next?: string;
@@ -112,7 +112,10 @@ export interface Prerequis {
 @Injectable()
 export class ReconversionService {
   private readonly supabase: SupabaseClient;
+  private readonly apprentissageApiKey?: string;
   private static readonly formationsPageSize = 10;
+  private static readonly apprentissageApiUrl =
+    'https://api.apprentissage.beta.gouv.fr/api/formation/v1/search';
   private static readonly koumoulFormationsUrl =
     'https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines';
 
@@ -120,6 +123,9 @@ export class ReconversionService {
     configService: ConfigService,
     private readonly aiService: AiService,
   ) {
+    this.apprentissageApiKey = configService.get<string>(
+      'APPRENTISSAGE_API_KEY',
+    );
     this.supabase = createClient(
       configService.get<string>('SUPABASE_URL')!,
       configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -223,11 +229,8 @@ export class ReconversionService {
   }
 
   /**
-   * Returns a stable, app-facing page of RNCP certifications.
-   *
-   * The cursor remains opaque to the app.  Koumoul supplies it in `next`,
-   * while the Supabase fallback uses its offset as a cursor. Both sources
-   * always return pages of ten records.
+   * Returns real training offers and certifications from the official
+   * Apprentissage API (with Koumoul and Supabase fallbacks).
    */
   async getFormationsByRome(
     rawCodeRome: string,
@@ -240,17 +243,196 @@ export class ReconversionService {
       return this.getSupabaseFormationPage(codeRome, options.after);
     }
 
-    const koumoulPage = await this.getKoumoulFormationPage(
-      codeRome,
-      options.after,
-    );
-    if (koumoulPage.results.length > 0 || requestedSource === 'koumoul') {
-      return koumoulPage;
+    if (requestedSource === 'koumoul') {
+      return this.getKoumoulFormationPage(codeRome, options.after);
     }
 
-    // Only an explicitly empty Koumoul first page activates the local source.
-    // We do not silently replace a later Koumoul page with unrelated records.
+    // 1. Try Apprentissage API first
+    if (this.apprentissageApiKey) {
+      try {
+        const apprentissagePage = await this.getApprentissageFormationPage(
+          codeRome,
+          options.after,
+        );
+        if (
+          apprentissagePage.results.length > 0 ||
+          requestedSource === 'apprentissage'
+        ) {
+          return apprentissagePage;
+        }
+      } catch (_) {
+        // Fallback to secondary sources on network error
+      }
+    }
+
+    // 2. Try Koumoul open-data certifications
+    try {
+      const koumoulPage = await this.getKoumoulFormationPage(
+        codeRome,
+        options.after,
+      );
+      if (koumoulPage.results.length > 0) {
+        return koumoulPage;
+      }
+    } catch (_) {
+      // Fallback to local DB
+    }
+
+    // 3. Fallback to Supabase local table
     return this.getSupabaseFormationPage(codeRome, options.after);
+  }
+
+  private async getApprentissageFormationPage(
+    codeRome: string,
+    after?: string,
+  ): Promise<FormationPage> {
+    if (!this.apprentissageApiKey) {
+      return { source: 'apprentissage', results: [], nextCursor: null };
+    }
+
+    const pageIndex =
+      after == null || after.length === 0 ? 0 : Number.parseInt(after, 10);
+    if (!Number.isSafeInteger(pageIndex) || pageIndex < 0) {
+      throw new BadRequestException('Curseur de pagination invalide');
+    }
+
+    const query = new URLSearchParams({
+      romes: codeRome,
+      page_size: String(ReconversionService.formationsPageSize),
+      page_index: String(pageIndex),
+      include_archived: 'false',
+    });
+
+    const response = await fetch(
+      `${ReconversionService.apprentissageApiUrl}?${query.toString()}`,
+      {
+        headers: {
+          Authorization: `Bearer ${this.apprentissageApiKey}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      return { source: 'apprentissage', results: [], nextCursor: null };
+    }
+
+    const payload = (await response.json()) as Record<string, any>;
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    const pageCount = payload.pagination?.page_count ?? 1;
+
+    const results = data.map((item: Record<string, any>) =>
+      this.apprentissageToFormation(item),
+    );
+
+    const nextIndex = pageIndex + 1;
+    const nextCursor = nextIndex < pageCount ? String(nextIndex) : null;
+
+    return {
+      source: 'apprentissage',
+      results,
+      nextCursor,
+    };
+  }
+
+  private apprentissageToFormation(
+    item: Record<string, any>,
+  ): Record<string, unknown> {
+    const formateur = item.formateur?.organisme;
+    const responsable = item.responsable?.organisme;
+    const org = formateur || responsable || {};
+    const uniteLegale = org.unite_legale || {};
+    const specific = org.renseignements_specifiques || {};
+    const certif = item.certification?.valeur || {};
+    const lieu = item.lieu || {};
+    const adresse = lieu.adresse || {};
+    const modalite = item.modalite || {};
+    const contenu = item.contenu_educatif || {};
+    const contact = item.contact || {};
+    const sessions = Array.isArray(item.sessions) ? item.sessions : [];
+
+    const rncpCode = this.normalizeRncpCode(certif.identifiant?.rncp);
+    const cleMin = item.identifiant?.cle_ministere_educatif || '';
+    const siret = org.identifiant?.siret || '';
+    const id = `apprentissage:${cleMin || siret || rncpCode || Math.random().toString(36).slice(2)}`;
+
+    const nomOrg =
+      uniteLegale.raison_sociale ||
+      org.etablissement?.enseigne ||
+      'Organisme certifié';
+    const titre =
+      certif.intitule?.cfd?.long ||
+      certif.intitule?.rncp ||
+      'Formation certifiante';
+    const niveau =
+      certif.intitule?.niveau?.cfd?.libelle ||
+      (certif.intitule?.niveau?.cfd?.europeen
+        ? `Niveau ${certif.intitule.niveau.cfd.europeen}`
+        : 'Niveau non renseigné');
+    const qualiopi = specific.qualiopi === true;
+
+    // Blocs de compétences
+    const blocs = Array.isArray(certif.blocs_competences?.rncp)
+      ? certif.blocs_competences.rncp
+          .map((b: any) => b.intitule)
+          .filter(Boolean)
+      : [];
+    const blocsCodes = Array.isArray(certif.blocs_competences?.rncp)
+      ? certif.blocs_competences.rncp
+          .map((b: any) => b.code)
+          .filter(Boolean)
+      : [];
+
+    // Sessions
+    const nextSession =
+      sessions.length > 0 && sessions[0].debut
+        ? `Prochaine session : ${new Date(sessions[0].debut).toLocaleDateString('fr-FR')}`
+        : 'Sessions régulières';
+
+    // Lieu
+    const lieuStr =
+      [adresse.label, adresse.code_postal, adresse.commune?.nom]
+        .filter(Boolean)
+        .join(', ') || 'Lieu à confirmer';
+
+    // Voie d'accès
+    const voieAcces = certif.type?.voie_acces?.rncp || {};
+    const formationContinue = voieAcces.formation_continue === true;
+    const alternanceAccessible =
+      voieAcces.apprentissage === true ||
+      voieAcces.contrat_professionnalisation === true;
+    const vaeAccessible = voieAcces.experience === true;
+
+    return {
+      id,
+      cleMinistereEducatif: cleMin,
+      siret,
+      uai: org.identifiant?.uai || '',
+      nomOrganisme: nomOrg,
+      titreFormation: titre,
+      certificationCode: rncpCode,
+      niveauCertification: niveau,
+      isCertificationActive: certif.periode_validite?.rncp?.actif !== false,
+      isQualiopi: qualiopi,
+      duree: modalite.duree_indicative
+        ? `${modalite.duree_indicative} an(s)`
+        : 'Durée selon parcours',
+      rythme: alternanceAccessible ? 'Alternance / Formation continue' : 'Temps plein / partiel',
+      format: modalite.entierement_a_distance
+        ? '100% à distance'
+        : 'Présentiel / Mixte',
+      lieu: lieuStr,
+      prochaineSession: nextSession,
+      contactEmail: contact.email || org.contacts?.[0]?.email || '',
+      contactTelephone: contact.telephone || '',
+      contenu: contenu.contenu || '',
+      objectif: contenu.objectif || '',
+      blocsCompetences: blocs,
+      blocsCompetencesCodes: blocsCodes,
+      formationContinue,
+      alternanceAccessible,
+      vaeAccessible,
+      onisepUrl: item.onisep?.url || '',
+    };
   }
 
   private async getKoumoulFormationPage(
