@@ -13,6 +13,7 @@ import {
   CurrentUser,
 } from '../auth/decorators/current-user.decorator';
 import { UpdateCheminPriorityDto } from './dto/update-chemin-priority.dto';
+import { UpdateReconversionJourneyDto } from './dto/update-reconversion-journey.dto';
 import { ReconversionService } from './reconversion.service';
 
 @Controller('reconversion')
@@ -48,6 +49,25 @@ export class ReconversionController {
       after,
       source,
     });
+  }
+
+  /** Restores deliberate choices made in formation exploration and immersion. */
+  @Get('journey/:codeRome')
+  getJourney(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+  ) {
+    return this.reconversionService.getJourney(user.id, codeRome);
+  }
+
+  /** Saves a partial journey section without touching the other section. */
+  @Patch('journey/:codeRome')
+  updateJourney(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+    @Body() dto: UpdateReconversionJourneyDto,
+  ) {
+    return this.reconversionService.updateJourney(user.id, codeRome, dto);
   }
 
   /** Persists the prerequisite the user wants to work on first. */

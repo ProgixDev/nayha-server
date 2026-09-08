@@ -6,6 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { AiService, EvaluationResult } from '../ai/ai.service';
+import { UpdateReconversionJourneyDto } from './dto/update-reconversion-journey.dto';
 
 type PrerequisLevel =
   'a_verifier' | 'obligatoire' | 'fortement_attendu' | 'utile';
@@ -36,6 +37,43 @@ export interface FormationPage {
   source: FormationSource;
   results: Record<string, unknown>[];
   nextCursor: string | null;
+}
+
+export interface FormationsJourney {
+  exploredFormationIds: string[];
+  favoritedFormationIds: string[];
+  dismissedFormationIds: string[];
+  notesAvis: Record<string, 'me_correspond' | 'a_verifier'>;
+  selectedFormationId?: string;
+  updatedAt?: string;
+}
+
+type ImmersionIntent = 'undecided' | 'yes' | 'later' | 'no';
+type ImmersionStatus =
+  | 'notStarted'
+  | 'preparing'
+  | 'requestReady'
+  | 'awaitingReply'
+  | 'scheduled'
+  | 'inProgress'
+  | 'completed';
+type ImmersionOutcome =
+  'undecided' | 'confirmed' | 'toClarify' | 'notConfirmed';
+
+export interface ImmersionJourney {
+  intent: ImmersionIntent;
+  duration: string;
+  criteria: string[];
+  prescriber: string;
+  completedActionIds: string[];
+  isCompleted: boolean;
+  outcome: ImmersionOutcome;
+  highlights: string;
+  concerns: string;
+  keepContact: boolean;
+  hasReuseConsent: boolean;
+  status: ImmersionStatus;
+  updatedAt?: string;
 }
 
 export interface Prerequis {
@@ -435,6 +473,364 @@ export class ReconversionService {
     }
 
     return { codeRome, prioritePrerequisId: prerequisId.trim(), updatedAt };
+  }
+
+  async getJourney(userId: string, rawCodeRome: string) {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('reconversion_formations_journey, reconversion_immersion_journey')
+      .eq('id', userId)
+      .single();
+
+    if (error || !profile) {
+      throw new NotFoundException('Profil utilisateur introuvable');
+    }
+
+    return {
+      codeRome,
+      formations: this.readFormationsJourney(
+        profile.reconversion_formations_journey,
+        codeRome,
+      ),
+      immersion: this.readImmersionJourney(
+        profile.reconversion_immersion_journey,
+        codeRome,
+      ),
+    };
+  }
+
+  async updateJourney(
+    userId: string,
+    rawCodeRome: string,
+    dto: UpdateReconversionJourneyDto,
+  ) {
+    if (dto.formations == null && dto.immersion == null) {
+      throw new BadRequestException('Aucune donnée de parcours à enregistrer');
+    }
+
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const { data: profile, error: readError } = await this.supabase
+      .from('user_profiles')
+      .select('reconversion_formations_journey, reconversion_immersion_journey')
+      .eq('id', userId)
+      .single();
+
+    if (readError || !profile) {
+      throw new NotFoundException('Profil utilisateur introuvable');
+    }
+
+    const formationsJourneys = this.readAllSectionJourneys(
+      profile.reconversion_formations_journey,
+    );
+    const immersionJourneys = this.readAllSectionJourneys(
+      profile.reconversion_immersion_journey,
+    );
+    const updatedAt = new Date().toISOString();
+
+    if (dto.formations != null) {
+      formationsJourneys[codeRome] = this.mergeFormationsJourney(
+        formationsJourneys[codeRome],
+        dto.formations,
+        updatedAt,
+      );
+    }
+    if (dto.immersion != null) {
+      immersionJourneys[codeRome] = this.mergeImmersionJourney(
+        immersionJourneys[codeRome],
+        dto.immersion,
+        updatedAt,
+      );
+    }
+
+    const { error: updateError } = await this.supabase
+      .from('user_profiles')
+      .update({
+        reconversion_formations_journey: formationsJourneys,
+        reconversion_immersion_journey: immersionJourneys,
+      })
+      .eq('id', userId);
+
+    if (updateError) {
+      throw new Error(
+        `Impossible d’enregistrer le parcours: ${updateError.message}`,
+      );
+    }
+
+    return {
+      codeRome,
+      formations: this.readFormationsJourney(formationsJourneys, codeRome),
+      immersion: this.readImmersionJourney(immersionJourneys, codeRome),
+    };
+  }
+
+  private readFormationsJourney(
+    value: unknown,
+    codeRome: string,
+  ): FormationsJourney {
+    const all = this.readAllSectionJourneys(value);
+    return this.normaliseFormationsJourney(all[codeRome]);
+  }
+
+  private normaliseFormationsJourney(value: unknown): FormationsJourney {
+    const raw = this.asRecord(value);
+    const notesAvis: Record<string, 'me_correspond' | 'a_verifier'> = {};
+    const rawNotes = this.asRecord(raw.notesAvis);
+
+    for (const [formationId, note] of Object.entries(rawNotes).slice(0, 100)) {
+      if (note === 'me_correspond' || note === 'a_verifier') {
+        notesAvis[this.text(formationId).slice(0, 300)] = note;
+      }
+    }
+
+    return {
+      exploredFormationIds: this.stringArray(raw.exploredFormationIds, 100),
+      favoritedFormationIds: this.stringArray(raw.favoritedFormationIds, 100),
+      dismissedFormationIds: this.stringArray(raw.dismissedFormationIds, 100),
+      notesAvis,
+      selectedFormationId: this.optionalText(raw.selectedFormationId, 300),
+      updatedAt: this.optionalText(raw.updatedAt, 40),
+    };
+  }
+
+  private mergeFormationsJourney(
+    current: unknown,
+    patch: Record<string, unknown>,
+    updatedAt: string,
+  ): FormationsJourney {
+    const next = this.normaliseFormationsJourney(current);
+    if (this.has(patch, 'exploredFormationIds')) {
+      next.exploredFormationIds = this.stringArray(
+        patch.exploredFormationIds,
+        100,
+      );
+    }
+    if (this.has(patch, 'favoritedFormationIds')) {
+      next.favoritedFormationIds = this.stringArray(
+        patch.favoritedFormationIds,
+        100,
+      );
+    }
+    if (this.has(patch, 'dismissedFormationIds')) {
+      next.dismissedFormationIds = this.stringArray(
+        patch.dismissedFormationIds,
+        100,
+      );
+    }
+    if (this.has(patch, 'notesAvis')) {
+      const rawNotes = this.asRecord(patch.notesAvis);
+      next.notesAvis = {};
+      for (const [formationId, note] of Object.entries(rawNotes).slice(
+        0,
+        100,
+      )) {
+        if (note !== 'me_correspond' && note !== 'a_verifier') {
+          throw new BadRequestException('Avis de formation invalide');
+        }
+        next.notesAvis[this.text(formationId).slice(0, 300)] = note;
+      }
+    }
+    if (this.has(patch, 'selectedFormationId')) {
+      next.selectedFormationId = this.optionalText(
+        patch.selectedFormationId,
+        300,
+      );
+    }
+    next.updatedAt = updatedAt;
+    return next;
+  }
+
+  private readImmersionJourney(
+    value: unknown,
+    codeRome: string,
+  ): ImmersionJourney {
+    const all = this.readAllSectionJourneys(value);
+    return this.normaliseImmersionJourney(all[codeRome]);
+  }
+
+  private normaliseImmersionJourney(value: unknown): ImmersionJourney {
+    const raw = this.asRecord(value);
+    const isCompleted = raw.isCompleted === true;
+    const status = this.enumValue(
+      raw.status,
+      [
+        'notStarted',
+        'preparing',
+        'requestReady',
+        'awaitingReply',
+        'scheduled',
+        'inProgress',
+        'completed',
+      ] as const,
+      'notStarted',
+      'statut d’immersion',
+    );
+
+    return {
+      intent: this.enumValue(
+        raw.intent,
+        ['undecided', 'yes', 'later', 'no'] as const,
+        'undecided',
+        'intention d’immersion',
+      ),
+      duration: this.text(raw.duration).slice(0, 100),
+      criteria: this.stringArray(raw.criteria, 10),
+      prescriber: this.text(raw.prescriber).slice(0, 160),
+      completedActionIds: this.stringArray(raw.completedActionIds, 20),
+      isCompleted,
+      outcome: this.enumValue(
+        raw.outcome,
+        ['undecided', 'confirmed', 'toClarify', 'notConfirmed'] as const,
+        'undecided',
+        'résultat d’immersion',
+      ),
+      highlights: this.text(raw.highlights).slice(0, 2000),
+      concerns: this.text(raw.concerns).slice(0, 2000),
+      keepContact: raw.keepContact === true,
+      hasReuseConsent: raw.hasReuseConsent === true,
+      status: isCompleted
+        ? 'completed'
+        : status === 'completed'
+          ? 'inProgress'
+          : status,
+      updatedAt: this.optionalText(raw.updatedAt, 40),
+    };
+  }
+
+  private mergeImmersionJourney(
+    current: unknown,
+    patch: Record<string, unknown>,
+    updatedAt: string,
+  ): ImmersionJourney {
+    const next = this.normaliseImmersionJourney(current);
+    if (this.has(patch, 'intent')) {
+      next.intent = this.enumValue(
+        patch.intent,
+        ['undecided', 'yes', 'later', 'no'] as const,
+        next.intent,
+        'intention d’immersion',
+      );
+    }
+    if (this.has(patch, 'duration')) {
+      next.duration = this.text(patch.duration).slice(0, 100);
+    }
+    if (this.has(patch, 'criteria')) {
+      next.criteria = this.stringArray(patch.criteria, 10);
+    }
+    if (this.has(patch, 'prescriber')) {
+      next.prescriber = this.text(patch.prescriber).slice(0, 160);
+    }
+    if (this.has(patch, 'completedActionIds')) {
+      next.completedActionIds = this.stringArray(patch.completedActionIds, 20);
+    }
+    if (this.has(patch, 'outcome')) {
+      next.outcome = this.enumValue(
+        patch.outcome,
+        ['undecided', 'confirmed', 'toClarify', 'notConfirmed'] as const,
+        next.outcome,
+        'résultat d’immersion',
+      );
+    }
+    if (this.has(patch, 'highlights')) {
+      next.highlights = this.text(patch.highlights).slice(0, 2000);
+    }
+    if (this.has(patch, 'concerns')) {
+      next.concerns = this.text(patch.concerns).slice(0, 2000);
+    }
+    if (this.has(patch, 'keepContact')) {
+      next.keepContact = this.booleanValue(patch.keepContact, 'contact');
+    }
+    if (this.has(patch, 'hasReuseConsent')) {
+      next.hasReuseConsent = this.booleanValue(
+        patch.hasReuseConsent,
+        'consentement',
+      );
+    }
+    if (this.has(patch, 'isCompleted')) {
+      next.isCompleted = this.booleanValue(
+        patch.isCompleted,
+        'confirmation de fin',
+      );
+    }
+    if (this.has(patch, 'status')) {
+      next.status = this.enumValue(
+        patch.status,
+        [
+          'notStarted',
+          'preparing',
+          'requestReady',
+          'awaitingReply',
+          'scheduled',
+          'inProgress',
+          'completed',
+        ] as const,
+        next.status,
+        'statut d’immersion',
+      );
+    }
+
+    if (next.status === 'completed' && !next.isCompleted) {
+      throw new BadRequestException(
+        'Une immersion doit être confirmée avant le bilan',
+      );
+    }
+    if (next.isCompleted) next.status = 'completed';
+    next.updatedAt = updatedAt;
+    return next;
+  }
+
+  private readAllSectionJourneys(value: unknown): Record<string, any> {
+    const raw = this.asRecord(value);
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, journey]) => this.asRecord(journey)),
+    ) as Record<string, any>;
+  }
+
+  private asRecord(value: unknown): Record<string, any> {
+    return value != null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, any>)
+      : {};
+  }
+
+  private has(value: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  private stringArray(value: unknown, maxItems: number): string[] {
+    if (!Array.isArray(value)) return [];
+    return [
+      ...new Set(
+        value
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim().slice(0, 300))
+          .filter((item) => item.length > 0),
+      ),
+    ].slice(0, maxItems);
+  }
+
+  private optionalText(value: unknown, maxLength: number): string | undefined {
+    const text = this.text(value).slice(0, maxLength);
+    return text.length > 0 ? text : undefined;
+  }
+
+  private booleanValue(value: unknown, label: string): boolean {
+    if (typeof value !== 'boolean') {
+      throw new BadRequestException(`${label} doit être un booléen`);
+    }
+    return value;
+  }
+
+  private enumValue<const T extends readonly string[]>(
+    value: unknown,
+    allowed: T,
+    fallback: T[number],
+    label: string,
+  ): T[number] {
+    if (value == null) return fallback;
+    if (typeof value === 'string' && allowed.includes(value)) {
+      return value as T[number];
+    }
+    throw new BadRequestException(`${label} invalide`);
   }
 
   private buildPrerequis(
