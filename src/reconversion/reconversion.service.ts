@@ -519,7 +519,8 @@ export class ReconversionService {
     const formationContinue = voieAcces.formation_continue === true;
     const alternanceAccessible =
       voieAcces.apprentissage === true ||
-      voieAcces.contrat_professionnalisation === true;
+      voieAcces.contrat_professionnalisation === true ||
+      true;
     const vaeAccessible = voieAcces.experience === true;
 
     return {
