@@ -507,8 +507,9 @@ Le profil contient un Portrait de Force avec des données enrichies. Tu DOIS les
 - Décide uniquement à partir du métier ROME visé et du marché français, jamais du niveau d'études ou d'une préférence personnelle.
 
 # PERTINENCE VAE (Validation des Acquis de l'Expérience)
-- Retourne "vaePossible": true UNIQUEMENT si la candidate possède déjà une expérience professionnelle significative (salariée, bénévole, stages, missions ou projets concrets) dans le domaine direct ou très proche de ce métier cible qui pourrait justifier une démarche de VAE en France.
-- Retourne false si elle n'a jamais exercé dans ce domaine/secteur, ou si ses expériences passées n'ont pas de lien suffisant avec le métier cible (dans ce cas, une VAE n'est pas adaptée, seule une formation classique/reconversion convient).
+- Retourne "vaePossible": true UNIQUEMENT si la candidate possède déjà une expérience professionnelle formelle, déclarée et significative (salariée, contractuelle, ou stages professionnels officiels) dans le domaine direct ou très proche de ce métier cible qui justifie légalement une démarche de VAE en France.
+- IMPORTANT : L'aide familiale, le soutien personnel à un proche malade, le rôle d'aidant familial à la maison ou les motivations personnelles ne constituent JAMAIS une expérience professionnelle permettant une VAE. Dans ces situations, retourne impérativement "vaePossible": false (seule une formation classique / reconversion est adaptée).
+- Retourne false si elle n'a jamais exercé professionnellement dans ce domaine/secteur (par exemple si son parcours professionnel est dans le commerce, la vente, etc., et qu'elle vise un métier de santé/soin ou technique).
 
 # FORMAT JSON (strict)
 {
