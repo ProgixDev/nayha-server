@@ -329,52 +329,89 @@ export class ReconversionService {
    */
   async getFormationsByRome(
     rawCodeRome: string,
-    options: { after?: string; source?: string } = {},
+    options: { after?: string; source?: string; modalite?: string } = {},
   ): Promise<FormationPage> {
     const codeRome = this.normalizeCodeRome(rawCodeRome);
     const requestedSource = this.parseFormationSource(options.source);
 
+    let page: FormationPage;
+
     if (requestedSource === 'supabase') {
-      return this.getSupabaseFormationPage(codeRome, options.after);
-    }
-
-    if (requestedSource === 'koumoul') {
-      return this.getKoumoulFormationPage(codeRome, options.after);
-    }
-
-    // 1. Try Apprentissage API first
-    if (this.apprentissageApiKey) {
-      try {
-        const apprentissagePage = await this.getApprentissageFormationPage(
-          codeRome,
-          options.after,
-        );
-        if (
-          apprentissagePage.results.length > 0 ||
-          requestedSource === 'apprentissage'
-        ) {
-          return apprentissagePage;
+      page = await this.getSupabaseFormationPage(codeRome, options.after);
+    } else if (requestedSource === 'koumoul') {
+      page = await this.getKoumoulFormationPage(codeRome, options.after);
+    } else {
+      // 1. Try Apprentissage API first
+      let apprentissagePage: FormationPage | null = null;
+      if (this.apprentissageApiKey) {
+        try {
+          const res = await this.getApprentissageFormationPage(
+            codeRome,
+            options.after,
+          );
+          if (res.results.length > 0 || requestedSource === 'apprentissage') {
+            apprentissagePage = res;
+          }
+        } catch (_) {
+          // Fallback to secondary sources on network error
         }
-      } catch (_) {
-        // Fallback to secondary sources on network error
+      }
+
+      if (apprentissagePage && apprentissagePage.results.length > 0) {
+        page = apprentissagePage;
+      } else {
+        // 2. Try Koumoul open-data certifications
+        try {
+          const koumoulPage = await this.getKoumoulFormationPage(
+            codeRome,
+            options.after,
+          );
+          if (koumoulPage.results.length > 0) {
+            page = koumoulPage;
+          } else {
+            page = await this.getSupabaseFormationPage(codeRome, options.after);
+          }
+        } catch (_) {
+          page = await this.getSupabaseFormationPage(codeRome, options.after);
+        }
       }
     }
 
-    // 2. Try Koumoul open-data certifications
-    try {
-      const koumoulPage = await this.getKoumoulFormationPage(
-        codeRome,
-        options.after,
-      );
-      if (koumoulPage.results.length > 0) {
-        return koumoulPage;
-      }
-    } catch (_) {
-      // Fallback to local DB
+    if (options.modalite) {
+      return {
+        ...page,
+        results: this.filterFormationsByModalite(page.results, options.modalite),
+      };
     }
 
-    // 3. Fallback to Supabase local table
-    return this.getSupabaseFormationPage(codeRome, options.after);
+    return page;
+  }
+
+  private filterFormationsByModalite(
+    results: Record<string, unknown>[],
+    modalite?: string,
+  ): Record<string, unknown>[] {
+    if (!modalite || modalite === 'all' || modalite === 'toutes') {
+      return results;
+    }
+    const clean = modalite.toLowerCase().trim();
+    switch (clean) {
+      case 'alternance':
+        return results.filter((r) => r.alternanceAccessible === true);
+      case 'continue':
+      case 'formation_continue':
+        return results.filter((r) => r.formationContinue === true);
+      case 'vae':
+        return results.filter((r) => r.vaeAccessible === true);
+      case 'distance':
+        return results.filter((r) => r.isDistance === true);
+      case 'presentiel':
+        return results.filter((r) => r.isDistance === false);
+      case 'qualiopi':
+        return results.filter((r) => r.isQualiopi === true);
+      default:
+        return results;
+    }
   }
 
   private async getApprentissageFormationPage(
@@ -522,6 +559,7 @@ export class ReconversionService {
       voieAcces.contrat_professionnalisation === true ||
       true;
     const vaeAccessible = voieAcces.experience === true;
+    const isDistance = modalite.entierement_a_distance === true;
 
     return {
       id,
@@ -534,11 +572,12 @@ export class ReconversionService {
       niveauCertification: niveau,
       isCertificationActive: certif.periode_validite?.rncp?.actif !== false,
       isQualiopi: qualiopi,
+      isDistance,
       duree: modalite.duree_indicative
         ? `${modalite.duree_indicative} an(s)`
         : 'Durée selon parcours',
       rythme: alternanceAccessible ? 'Alternance / Formation continue' : 'Temps plein / partiel',
-      format: modalite.entierement_a_distance
+      format: isDistance
         ? '100% à distance'
         : 'Présentiel / Mixte',
       lieu: lieuStr,
@@ -792,6 +831,8 @@ export class ReconversionService {
       formationContinue: row['SI_JURY_FC'] === true,
       vaeAccessible: row['SI_JURY_VAE'] === true || row['jury_vae'] != null,
       alternanceAccessible: row['SI_JURY_CA'] === true,
+      isQualiopi: false,
+      isDistance: false,
       statistiquesPromotions: row['statistiques_promotions'] ?? null,
     };
   }
@@ -828,6 +869,8 @@ export class ReconversionService {
       ),
       isCertificationActive:
         this.text(row['etat_libelle']).toLowerCase() === 'publie',
+      isQualiopi: false,
+      isDistance: false,
       etatFiche: this.text(row['etat_libelle']),
       dateFinEnregistrement: this.text(row['date_maj']),
       prerequis: '',

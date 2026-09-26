@@ -44,10 +44,12 @@ export class ReconversionController {
     @Param('codeRome') codeRome: string,
     @Query('after') after?: string,
     @Query('source') source?: string,
+    @Query('modalite') modalite?: string,
   ) {
     return this.reconversionService.getFormationsByRome(codeRome, {
       after,
       source,
+      modalite,
     });
   }
 
