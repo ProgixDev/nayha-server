@@ -452,8 +452,10 @@ export class ReconversionService {
     const data = Array.isArray(payload.data) ? payload.data : [];
     const pageCount = payload.pagination?.page_count ?? 1;
 
-    const results = data.map((item: Record<string, any>) =>
-      this.apprentissageToFormation(item),
+    const results = await Promise.all(
+      data.map((item: Record<string, any>) =>
+        this.apprentissageToFormation(item),
+      )
     );
 
     const nextIndex = pageIndex + 1;
@@ -466,9 +468,9 @@ export class ReconversionService {
     };
   }
 
-  private apprentissageToFormation(
+  private async apprentissageToFormation(
     item: Record<string, any>,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const formateur = item.formateur?.organisme;
     const responsable = item.responsable?.organisme;
     const org = formateur || responsable || {};
@@ -487,6 +489,34 @@ export class ReconversionService {
     const siret = org.identifiant?.siret || '';
     const id = `apprentissage:${cleMin || siret || rncpCode || Math.random().toString(36).slice(2)}`;
 
+    let realActiveStatus = certif.periode_validite?.rncp?.actif !== false;
+    if (rncpCode) {
+      try {
+        const kRes = await fetch(`https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines?q=${rncpCode}&size=1`);
+        if (kRes.ok) {
+          const kData = await kRes.json() as Record<string, any>;
+          const kCertif = kData.results?.[0];
+          if (kCertif) {
+            realActiveStatus = kCertif.ACTIF === true && (kCertif.ETAT_FICHE === 'Publiée' || kCertif.ETAT_FICHE === 'Publie');
+          }
+        }
+      } catch (e) {}
+    }
+
+    let realQualiopiStatus = specific.qualiopi === true;
+    if (siret) {
+      try {
+        const rRes = await fetch(`https://recherche-entreprises.api.gouv.fr/search?q=${siret}`);
+        if (rRes.ok) {
+          const rData = await rRes.json() as Record<string, any>;
+          const rEntreprise = rData.results?.[0];
+          if (rEntreprise) {
+            realQualiopiStatus = rEntreprise.complements?.est_qualiopi === true;
+          }
+        }
+      } catch (e) {}
+    }
+
     const nomOrg =
       uniteLegale.raison_sociale ||
       org.etablissement?.enseigne ||
@@ -500,7 +530,7 @@ export class ReconversionService {
       (certif.intitule?.niveau?.cfd?.europeen
         ? `Niveau ${certif.intitule.niveau.cfd.europeen}`
         : 'Niveau non renseigné');
-    const qualiopi = specific.qualiopi === true;
+    const qualiopi = realQualiopiStatus;
 
     // Blocs de compétences
     const blocs = Array.isArray(certif.blocs_competences?.rncp)
@@ -570,7 +600,7 @@ export class ReconversionService {
       titreFormation: titre,
       certificationCode: rncpCode,
       niveauCertification: niveau,
-      isCertificationActive: certif.periode_validite?.rncp?.actif !== false,
+      isCertificationActive: realActiveStatus,
       isQualiopi: qualiopi,
       isDistance,
       duree: modalite.duree_indicative
