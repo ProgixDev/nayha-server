@@ -382,7 +382,10 @@ export class ReconversionService {
     if (options.modalite) {
       return {
         ...page,
-        results: this.filterFormationsByModalite(page.results, options.modalite),
+        results: this.filterFormationsByModalite(
+          page.results,
+          options.modalite,
+        ),
       };
     }
 
@@ -506,6 +509,11 @@ export class ReconversionService {
       koumoulActive ?? certif.periode_validite?.rncp?.actif === true;
     const realQualiopiStatus =
       qualiopiFromAnnuaire ?? specific.qualiopi === true;
+    // An active RNCP is necessary for CPF eligibility, but it does not prove
+    // that this particular provider/session is published on Mon Compte
+    // Formation. Until an offer-level source is connected, never advertise
+    // the offer as CPF-eligible.
+    const cpfEligibility = koumoulActive === false ? 'ineligible' : 'to_verify';
 
     const nomOrg =
       uniteLegale.raison_sociale ||
@@ -529,9 +537,7 @@ export class ReconversionService {
           .filter(Boolean)
       : [];
     const blocsCodes = Array.isArray(certif.blocs_competences?.rncp)
-      ? certif.blocs_competences.rncp
-          .map((b: any) => b.code)
-          .filter(Boolean)
+      ? certif.blocs_competences.rncp.map((b: any) => b.code).filter(Boolean)
       : [];
 
     // Sessions
@@ -542,18 +548,12 @@ export class ReconversionService {
 
     const now = new Date();
     const normalizedSessions = sessions
-      .filter(
-        (s: any) => s.debut == null || new Date(s.debut) >= now,
-      )
+      .filter((s: any) => s.debut == null || new Date(s.debut) >= now)
       .map((s: any) => {
         const sAdresse = s.lieu?.adresse || {};
         return {
-          debut: s.debut
-            ? new Date(s.debut).toLocaleDateString('fr-FR')
-            : null,
-          fin: s.fin
-            ? new Date(s.fin).toLocaleDateString('fr-FR')
-            : null,
+          debut: s.debut ? new Date(s.debut).toLocaleDateString('fr-FR') : null,
+          fin: s.fin ? new Date(s.fin).toLocaleDateString('fr-FR') : null,
           lieu:
             [sAdresse.label, sAdresse.commune?.nom]
               .filter(Boolean)
@@ -590,8 +590,9 @@ export class ReconversionService {
       certificationCode: rncpCode,
       niveauCertification: niveau,
       isCertificationActive: realActiveStatus,
-      cpfEligible: realActiveStatus,
-      cpfEligibilityVerified: koumoulActive != null,
+      rncpStatusVerified: koumoulActive != null,
+      cpfEligibility,
+      cpfOfferVerified: false,
       isQualiopi: qualiopi,
       qualiopiVerified: qualiopiFromAnnuaire != null,
       // Carif-Oref requires a convention/API credential. Do not present an
@@ -602,10 +603,10 @@ export class ReconversionService {
       duree: modalite.duree_indicative
         ? `${modalite.duree_indicative} an(s)`
         : 'Durée selon parcours',
-      rythme: alternanceAccessible ? 'Alternance / Formation continue' : 'Temps plein / partiel',
-      format: isDistance
-        ? '100% à distance'
-        : 'Présentiel / Mixte',
+      rythme: alternanceAccessible
+        ? 'Alternance / Formation continue'
+        : 'Temps plein / partiel',
+      format: isDistance ? '100% à distance' : 'Présentiel / Mixte',
       lieu: lieuStr,
       prochaineSession: nextSession,
       sessions: normalizedSessions,
@@ -769,8 +770,7 @@ export class ReconversionService {
       const payload = (await response.json()) as KoumoulPage;
       const results = Array.isArray(payload.results) ? payload.results : [];
       const match = results.find(
-        (row) =>
-          this.normalizeRncpCode(row['NUMERO_FICHE']) === normalizedCode,
+        (row) => this.normalizeRncpCode(row['NUMERO_FICHE']) === normalizedCode,
       );
 
       if (!match) throw new NotFoundException('Formation introuvable');
@@ -793,8 +793,7 @@ export class ReconversionService {
     const payload = (await response.json()) as KoumoulPage;
     const results = Array.isArray(payload.results) ? payload.results : [];
     const match = results.find(
-      (row) =>
-        String(row['ID_FICHE'] ?? row['_id'] ?? '') === koumoulId,
+      (row) => String(row['ID_FICHE'] ?? row['_id'] ?? '') === koumoulId,
     );
 
     if (!match) throw new NotFoundException('Formation introuvable');
@@ -846,6 +845,9 @@ export class ReconversionService {
         'Certificateur non renseigné',
       ),
       isCertificationActive: row['ACTIF'] === true,
+      rncpStatusVerified: true,
+      cpfEligibility: row['ACTIF'] === true ? 'to_verify' : 'ineligible',
+      cpfOfferVerified: false,
       etatFiche: this.text(row['ETAT_FICHE']),
       dateFinEnregistrement: this.text(row['date_fin_enregistrement']),
       prerequis: this.text(row['prerequis_entree_formation']),
@@ -895,6 +897,12 @@ export class ReconversionService {
       ),
       isCertificationActive:
         this.text(row['etat_libelle']).toLowerCase() === 'publie',
+      rncpStatusVerified: false,
+      cpfEligibility:
+        this.text(row['etat_libelle']).toLowerCase() === 'publie'
+          ? 'to_verify'
+          : 'ineligible',
+      cpfOfferVerified: false,
       isQualiopi: false,
       isDistance: false,
       etatFiche: this.text(row['etat_libelle']),
@@ -963,9 +971,8 @@ export class ReconversionService {
       if (!response.ok) return null;
 
       const payload = (await response.json()) as Record<string, any>;
-      const enterprise = (Array.isArray(payload.results)
-        ? payload.results
-        : []
+      const enterprise = (
+        Array.isArray(payload.results) ? payload.results : []
       ).find((candidate: Record<string, any>) => {
         const establishmentSirets = [
           candidate.siege?.siret,
@@ -1251,7 +1258,10 @@ export class ReconversionService {
       dismissedFormationIds: this.stringArray(raw.dismissedFormationIds, 100),
       notesAvis,
       selectedFormationId: this.optionalText(raw.selectedFormationId, 300),
-      selectedFormationTitre: this.optionalText(raw.selectedFormationTitre, 300),
+      selectedFormationTitre: this.optionalText(
+        raw.selectedFormationTitre,
+        300,
+      ),
       updatedAt: this.optionalText(raw.updatedAt, 40),
     };
   }
@@ -1562,8 +1572,7 @@ export class ReconversionService {
         ReconversionService.STATUT_PRIX as readonly string[],
       ),
       soldeCpf,
-      isCpfReel:
-        typeof raw.isCpfReel === 'boolean' ? raw.isCpfReel : undefined,
+      isCpfReel: typeof raw.isCpfReel === 'boolean' ? raw.isCpfReel : undefined,
       ancienneteAnnees,
       demarcheFinancement: this.optionalEnum(
         raw.demarcheFinancement,
@@ -1693,7 +1702,7 @@ export class ReconversionService {
           !Number.isInteger(patch.dureeAutonomieMois) ||
           (patch.dureeAutonomieMois as number) < 0)
       ) {
-        throw new BadRequestException('Durée d\'autonomie invalide');
+        throw new BadRequestException("Durée d'autonomie invalide");
       }
       next.dureeAutonomieMois =
         patch.dureeAutonomieMois != null
