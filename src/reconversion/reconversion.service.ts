@@ -136,6 +136,8 @@ export class ReconversionService {
     'https://api.apprentissage.beta.gouv.fr/api/formation/v1/search';
   private static readonly koumoulFormationsUrl =
     'https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines';
+  private static readonly entreprisesApiUrl =
+    'https://recherche-entreprises.api.gouv.fr/search';
 
   constructor(
     configService: ConfigService,
@@ -452,10 +454,14 @@ export class ReconversionService {
     const data = Array.isArray(payload.data) ? payload.data : [];
     const pageCount = payload.pagination?.page_count ?? 1;
 
+    // Enrichment calls are independent per offer.  Running them concurrently
+    // keeps a 10-offer page responsive while retaining the four-source
+    // contract (Carif-Oref is deliberately not claimed until credentials are
+    // configured; see regionalFundingAvailable below).
     const results = await Promise.all(
       data.map((item: Record<string, any>) =>
         this.apprentissageToFormation(item),
-      )
+      ),
     );
 
     const nextIndex = pageIndex + 1;
@@ -489,33 +495,17 @@ export class ReconversionService {
     const siret = org.identifiant?.siret || '';
     const id = `apprentissage:${cleMin || siret || rncpCode || Math.random().toString(36).slice(2)}`;
 
-    let realActiveStatus = certif.periode_validite?.rncp?.actif !== false;
-    if (rncpCode) {
-      try {
-        const kRes = await fetch(`https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines?q=${rncpCode}&size=1`);
-        if (kRes.ok) {
-          const kData = await kRes.json() as Record<string, any>;
-          const kCertif = kData.results?.[0];
-          if (kCertif) {
-            realActiveStatus = kCertif.ACTIF === true && (kCertif.ETAT_FICHE === 'Publiée' || kCertif.ETAT_FICHE === 'Publie');
-          }
-        }
-      } catch (e) {}
-    }
-
-    let realQualiopiStatus = specific.qualiopi === true;
-    if (siret) {
-      try {
-        const rRes = await fetch(`https://recherche-entreprises.api.gouv.fr/search?q=${siret}`);
-        if (rRes.ok) {
-          const rData = await rRes.json() as Record<string, any>;
-          const rEntreprise = rData.results?.[0];
-          if (rEntreprise) {
-            realQualiopiStatus = rEntreprise.complements?.est_qualiopi === true;
-          }
-        }
-      } catch (e) {}
-    }
+    const [koumoulActive, qualiopiFromAnnuaire] = await Promise.all([
+      this.getKoumoulActiveStatus(rncpCode),
+      this.getQualiopiStatus(siret),
+    ]);
+    // A temporary external outage must not turn a known offer into an
+    // ineligible one.  The verification flags let clients distinguish the
+    // official enrichment from the catalogue's own metadata.
+    const realActiveStatus =
+      koumoulActive ?? certif.periode_validite?.rncp?.actif === true;
+    const realQualiopiStatus =
+      qualiopiFromAnnuaire ?? specific.qualiopi === true;
 
     const nomOrg =
       uniteLegale.raison_sociale ||
@@ -586,8 +576,7 @@ export class ReconversionService {
     const formationContinue = voieAcces.formation_continue === true;
     const alternanceAccessible =
       voieAcces.apprentissage === true ||
-      voieAcces.contrat_professionnalisation === true ||
-      true;
+      voieAcces.contrat_professionnalisation === true;
     const vaeAccessible = voieAcces.experience === true;
     const isDistance = modalite.entierement_a_distance === true;
 
@@ -601,7 +590,14 @@ export class ReconversionService {
       certificationCode: rncpCode,
       niveauCertification: niveau,
       isCertificationActive: realActiveStatus,
+      cpfEligible: realActiveStatus,
+      cpfEligibilityVerified: koumoulActive != null,
       isQualiopi: qualiopi,
+      qualiopiVerified: qualiopiFromAnnuaire != null,
+      // Carif-Oref requires a convention/API credential. Do not present an
+      // unverified regional funding badge as if it were factual.
+      regionalFundingAvailable: null,
+      regionalFundingStatus: 'non_configured',
       isDistance,
       duree: modalite.duree_indicative
         ? `${modalite.duree_indicative} an(s)`
@@ -755,9 +751,12 @@ export class ReconversionService {
     const isRncp = /^RNCP\d+$/i.test(koumoulId);
 
     if (isRncp) {
-      const rawNumber = koumoulId.replace(/^RNCP/i, '');
+      const normalizedCode = koumoulId.toUpperCase();
       const query = new URLSearchParams({
-        NUMERO_FICHE_search: rawNumber,
+        // `_search` is tokenised by Data Fair and does not reliably match an
+        // RNCP identifier.  `_eq` guarantees that we enrich the requested
+        // certification rather than a similarly indexed one.
+        NUMERO_FICHE_eq: normalizedCode,
         size: String(ReconversionService.formationsPageSize),
       });
 
@@ -771,8 +770,7 @@ export class ReconversionService {
       const results = Array.isArray(payload.results) ? payload.results : [];
       const match = results.find(
         (row) =>
-          this.normalizeRncpCode(row['NUMERO_FICHE']) ===
-          koumoulId.toUpperCase(),
+          this.normalizeRncpCode(row['NUMERO_FICHE']) === normalizedCode,
       );
 
       if (!match) throw new NotFoundException('Formation introuvable');
@@ -871,10 +869,8 @@ export class ReconversionService {
     row: Record<string, unknown>,
     codeRome: string,
   ): boolean {
-    const etat = this.text(row['ETAT_FICHE']).toLowerCase();
     return (
       row['ACTIF'] === true &&
-      etat.startsWith('publi') &&
       this.splitValues(row['CODES_ROME'])
         .map((code) => code.toUpperCase())
         .includes(codeRome)
@@ -916,6 +912,78 @@ export class ReconversionService {
       alternanceAccessible: Number(row['accessibilite_ca'] ?? 0) > 0,
       statistiquesPromotions: null,
     };
+  }
+
+  /**
+   * France compétences data exposed by Koumoul is the authority used for the
+   * CPF rule. `null` means the source could not be consulted or did not return
+   * that exact RNCP code; it is intentionally different from `false`.
+   */
+  private async getKoumoulActiveStatus(
+    rncpCode: string,
+  ): Promise<boolean | null> {
+    if (!rncpCode) return null;
+
+    const query = new URLSearchParams({
+      NUMERO_FICHE_eq: rncpCode,
+      size: '1',
+    });
+
+    try {
+      const response = await fetch(
+        `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+      );
+      if (!response.ok) return null;
+
+      const payload = (await response.json()) as KoumoulPage;
+      const row = (payload.results ?? []).find(
+        (candidate) =>
+          this.normalizeRncpCode(candidate['NUMERO_FICHE']) === rncpCode,
+      );
+      return row == null ? null : row['ACTIF'] === true;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * The enterprise search endpoint may return a legal unit plus nearby/other
+   * establishments. Only accept its Qualiopi value when the queried SIRET is
+   * actually present in the response; using `results[0]` alone can badge the
+   * wrong provider.
+   */
+  private async getQualiopiStatus(siret: string): Promise<boolean | null> {
+    if (!/^\d{14}$/.test(siret)) return null;
+
+    const query = new URLSearchParams({ q: siret, per_page: '10' });
+    try {
+      const response = await fetch(
+        `${ReconversionService.entreprisesApiUrl}?${query.toString()}`,
+      );
+      if (!response.ok) return null;
+
+      const payload = (await response.json()) as Record<string, any>;
+      const enterprise = (Array.isArray(payload.results)
+        ? payload.results
+        : []
+      ).find((candidate: Record<string, any>) => {
+        const establishmentSirets = [
+          candidate.siege?.siret,
+          ...(Array.isArray(candidate.matching_etablissements)
+            ? candidate.matching_etablissements.map(
+                (establishment: Record<string, any>) => establishment.siret,
+              )
+            : []),
+        ];
+        return establishmentSirets.includes(siret);
+      });
+
+      return enterprise == null
+        ? null
+        : enterprise.complements?.est_qualiopi === true;
+    } catch (_) {
+      return null;
+    }
   }
 
   private parseFormationSource(
