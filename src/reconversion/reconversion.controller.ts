@@ -41,15 +41,18 @@ export class ReconversionController {
    */
   @Get('formations/:codeRome')
   getFormations(
+    @CurrentUser() user: AuthUser,
     @Param('codeRome') codeRome: string,
     @Query('after') after?: string,
     @Query('source') source?: string,
     @Query('modalite') modalite?: string,
+    @Query('rayonKm') rayonKm?: string,
   ) {
-    return this.reconversionService.getFormationsByRome(codeRome, {
+    return this.reconversionService.getFormationsByRome(user.id, codeRome, {
       after,
       source,
       modalite,
+      rayonKm,
     });
   }
 

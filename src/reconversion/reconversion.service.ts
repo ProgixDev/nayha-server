@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -27,6 +28,11 @@ interface Certification {
 }
 
 type FormationSource = 'apprentissage' | 'koumoul' | 'supabase';
+
+interface Coordinates {
+  latitude: number;
+  longitude: number;
+}
 
 interface KoumoulPage {
   next?: string;
@@ -129,15 +135,30 @@ export interface Prerequis {
 
 @Injectable()
 export class ReconversionService {
+  private readonly logger = new Logger(ReconversionService.name);
   private readonly supabase: SupabaseClient;
   private readonly apprentissageApiKey?: string;
+  private readonly formationsApiDebug: boolean;
   private static readonly formationsPageSize = 10;
+  private static readonly maximumSearchRadiusKm = 1000;
   private static readonly apprentissageApiUrl =
     'https://api.apprentissage.beta.gouv.fr/api/formation/v1/search';
   private static readonly koumoulFormationsUrl =
     'https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines';
   private static readonly entreprisesApiUrl =
     'https://recherche-entreprises.api.gouv.fr/search';
+  private static readonly adresseApiUrl =
+    'https://api-adresse.data.gouv.fr/search';
+  private static readonly qualiopiCacheTtlMs = 24 * 60 * 60 * 1000;
+  private static readonly geocodingCacheTtlMs = 7 * 24 * 60 * 60 * 1000;
+  private readonly qualiopiCache = new Map<
+    string,
+    { value: boolean; checkedAt: number }
+  >();
+  private readonly cityCoordinatesCache = new Map<
+    string,
+    { value: Coordinates; checkedAt: number }
+  >();
 
   constructor(
     configService: ConfigService,
@@ -146,6 +167,8 @@ export class ReconversionService {
     this.apprentissageApiKey = configService.get<string>(
       'APPRENTISSAGE_API_KEY',
     );
+    this.formationsApiDebug =
+      configService.get<string>('FORMATIONS_API_DEBUG') === 'true';
     this.supabase = createClient(
       configService.get<string>('SUPABASE_URL')!,
       configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -330,15 +353,37 @@ export class ReconversionService {
    * Apprentissage API (with Koumoul and Supabase fallbacks).
    */
   async getFormationsByRome(
+    userId: string,
     rawCodeRome: string,
-    options: { after?: string; source?: string; modalite?: string } = {},
+    options: {
+      after?: string;
+      source?: string;
+      modalite?: string;
+      rayonKm?: string;
+    } = {},
   ): Promise<FormationPage> {
     const codeRome = this.normalizeCodeRome(rawCodeRome);
     const requestedSource = this.parseFormationSource(options.source);
+    const rayonKm = this.parseRayonKm(options.rayonKm);
+    const userCoordinates =
+      rayonKm == null ? null : await this.getUserCityCoordinates(userId);
+    this.logFormationTrace('request', {
+      codeRome,
+      after: options.after ?? null,
+      requestedSource: requestedSource ?? 'auto',
+      modalite: options.modalite ?? 'all',
+      rayonKm,
+    });
 
     let page: FormationPage;
 
-    if (requestedSource === 'supabase') {
+    if (requestedSource === 'apprentissage') {
+      page = await this.getApprentissageFormationPage(
+        codeRome,
+        options.after,
+        userCoordinates,
+      );
+    } else if (requestedSource === 'supabase') {
       page = await this.getSupabaseFormationPage(codeRome, options.after);
     } else if (requestedSource === 'koumoul') {
       page = await this.getKoumoulFormationPage(codeRome, options.after);
@@ -350,6 +395,7 @@ export class ReconversionService {
           const res = await this.getApprentissageFormationPage(
             codeRome,
             options.after,
+            userCoordinates,
           );
           if (res.results.length > 0 || requestedSource === 'apprentissage') {
             apprentissagePage = res;
@@ -379,17 +425,94 @@ export class ReconversionService {
       }
     }
 
-    if (options.modalite) {
-      return {
-        ...page,
-        results: this.filterFormationsByModalite(
-          page.results,
-          options.modalite,
-        ),
-      };
-    }
+    const responsePage = options.modalite
+      ? {
+          ...page,
+          results: this.filterFormationsByModalite(
+            page.results,
+            options.modalite,
+          ),
+        }
+      : page;
 
-    return page;
+    const proximityPage =
+      rayonKm == null
+        ? responsePage
+        : {
+            ...responsePage,
+            results: responsePage.results
+              .filter(
+                (formation) =>
+                  typeof formation['distanceKm'] === 'number' &&
+                  formation['distanceKm'] <= rayonKm,
+              )
+              .sort(
+                (first, second) =>
+                  Number(first['distanceKm']) - Number(second['distanceKm']),
+              ),
+          };
+
+    // Complete contract serialised by Nest and delivered to the mobile screen.
+    this.logFormationTrace('mobile-response', proximityPage);
+    this.logFormationsPage(codeRome, proximityPage, options.modalite);
+    return proximityPage;
+  }
+
+  /** Emits diagnostic metadata only; no user or contact data. */
+  private logFormationsPage(
+    codeRome: string,
+    page: FormationPage,
+    modalite?: string,
+  ): void {
+    const cpfStatuses = page.results.reduce<Record<string, number>>(
+      (counts, formation) => {
+        const status = this.text(formation['cpfEligibility'], 'absent');
+        counts[status] = (counts[status] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+    const rncpStatuses = page.results.reduce<Record<string, number>>(
+      (counts, formation) => {
+        const status =
+          formation['isCertificationActive'] === true
+            ? 'active'
+            : 'inactive_or_unknown';
+        counts[status] = (counts[status] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+
+    this.logger.log(
+      `[formations] rome=${codeRome} source=${page.source} modalite=${modalite ?? 'all'} results=${page.results.length} rncp=${JSON.stringify(rncpStatuses)} cpf=${JSON.stringify(cpfStatuses)}`,
+    );
+    if (this.formationsApiDebug) {
+      this.logger.log(
+        `[formations-api][final-list] ${JSON.stringify(page.results)}`,
+      );
+    }
+  }
+
+  /** Local diagnostic mode only; never enabled by default in production. */
+  private logFormationApiResponse(
+    source: string,
+    url: string,
+    status: number,
+    payload: unknown,
+  ): void {
+    if (!this.formationsApiDebug) return;
+    this.logger.log(
+      `[formations-api][${source}] status=${status} url=${url} response=${JSON.stringify(payload)}`,
+    );
+  }
+
+  /** Opt-in local trace. Upstream catalogues may contain public contact data. */
+  private logFormationTrace(stage: string, payload: unknown): void {
+    if (!this.formationsApiDebug) return;
+    this.logger.log(
+      `[formations-trace][${stage}] ${JSON.stringify(payload)}`,
+    );
   }
 
   private filterFormationsByModalite(
@@ -419,9 +542,133 @@ export class ReconversionService {
     }
   }
 
+  private parseRayonKm(raw: string | undefined): number | null {
+    if (raw == null || raw.trim().length === 0) return null;
+    const value = Number(raw);
+    if (
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > ReconversionService.maximumSearchRadiusKm
+    ) {
+      throw new BadRequestException('Rayon de recherche invalide');
+    }
+    return value;
+  }
+
+  /** Resolves the city explicitly provided in the life diagnostic. */
+  private async getUserCityCoordinates(userId: string): Promise<Coordinates> {
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('diagnostic_vie_data')
+      .eq('id', userId)
+      .single();
+
+    const diagnostic = profile?.diagnostic_vie_data;
+    const city =
+      diagnostic != null && typeof diagnostic === 'object'
+        ? this.text((diagnostic as Record<string, unknown>)['city'])
+        : '';
+    if (error || city.length === 0) {
+      throw new BadRequestException(
+        'Ajoutez votre ville dans le diagnostic de vie pour utiliser ce filtre.',
+      );
+    }
+
+    const cacheKey = city.toLocaleLowerCase('fr-FR');
+    const cached = this.cityCoordinatesCache.get(cacheKey);
+    if (
+      cached &&
+      Date.now() - cached.checkedAt < ReconversionService.geocodingCacheTtlMs
+    ) {
+      return cached.value;
+    }
+
+    const query = new URLSearchParams({ q: city, limit: '1', type: 'municipality' });
+    const response = await fetch(
+      `${ReconversionService.adresseApiUrl}?${query.toString()}`,
+    );
+    if (!response.ok) {
+      throw new Error('Le service de localisation est momentanément indisponible.');
+    }
+
+    const payload = (await response.json()) as {
+      features?: Array<{ geometry?: { coordinates?: unknown } }>;
+    };
+    const coordinates = this.coordinatesFromUnknown(
+      payload.features?.[0]?.geometry?.coordinates,
+    );
+    if (coordinates == null) {
+      throw new BadRequestException(
+        'La ville enregistrée est introuvable. Vérifiez son orthographe.',
+      );
+    }
+    this.cityCoordinatesCache.set(cacheKey, {
+      value: coordinates,
+      checkedAt: Date.now(),
+    });
+    return coordinates;
+  }
+
+  private extractOfferCoordinates(item: Record<string, any>): Coordinates | null {
+    const lieu = item.lieu ?? {};
+    return (
+      this.coordinatesFromUnknown(lieu.geolocalisation) ??
+      this.coordinatesFromUnknown(lieu.geolocalisation?.coordinates) ??
+      this.coordinatesFromUnknown(lieu.coordinates) ??
+      this.coordinatesFromUnknown(lieu.adresse?.geolocalisation) ??
+      this.coordinatesFromUnknown(lieu.adresse?.coordinates)
+    );
+  }
+
+  /** Accepts GeoJSON [longitude, latitude] and common latitude/longitude maps. */
+  private coordinatesFromUnknown(raw: unknown): Coordinates | null {
+    if (Array.isArray(raw) && raw.length >= 2) {
+      const longitude = Number(raw[0]);
+      const latitude = Number(raw[1]);
+      return this.validCoordinates(latitude, longitude)
+        ? { latitude, longitude }
+        : null;
+    }
+    if (raw == null || typeof raw !== 'object') return null;
+    const value = raw as Record<string, unknown>;
+    const latitude = Number(value['latitude'] ?? value['lat']);
+    const longitude = Number(value['longitude'] ?? value['lon'] ?? value['lng']);
+    return this.validCoordinates(latitude, longitude)
+      ? { latitude, longitude }
+      : null;
+  }
+
+  private validCoordinates(latitude: number, longitude: number): boolean {
+    return (
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180
+    );
+  }
+
+  /** Straight-line distance, rounded to the nearest kilometre. */
+  private distanceInKm(from: Coordinates, to: Coordinates): number {
+    const radians = (degrees: number) => (degrees * Math.PI) / 180;
+    const latitudeDelta = radians(to.latitude - from.latitude);
+    const longitudeDelta = radians(to.longitude - from.longitude);
+    const a =
+      Math.sin(latitudeDelta / 2) ** 2 +
+      Math.cos(radians(from.latitude)) *
+        Math.cos(radians(to.latitude)) *
+        Math.sin(longitudeDelta / 2) ** 2;
+    return Math.max(
+      1,
+      Math.round(6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))),
+    );
+  }
+
   private async getApprentissageFormationPage(
     codeRome: string,
     after?: string,
+    userCoordinates?: Coordinates | null,
   ): Promise<FormationPage> {
     if (!this.apprentissageApiKey) {
       return { source: 'apprentissage', results: [], nextCursor: null };
@@ -440,30 +687,35 @@ export class ReconversionService {
       include_archived: 'false',
     });
 
-    const response = await fetch(
-      `${ReconversionService.apprentissageApiUrl}?${query.toString()}`,
-      {
-        headers: {
-          Authorization: `Bearer ${this.apprentissageApiKey}`,
-        },
+    const requestUrl = `${ReconversionService.apprentissageApiUrl}?${query.toString()}`;
+    const response = await fetch(requestUrl, {
+      headers: {
+        Authorization: `Bearer ${this.apprentissageApiKey}`,
       },
-    );
+    });
 
     if (!response.ok) {
+      this.logFormationTrace('apprentissage-error', {
+        status: response.status,
+        url: requestUrl,
+      });
       return { source: 'apprentissage', results: [], nextCursor: null };
     }
 
     const payload = (await response.json()) as Record<string, any>;
+    this.logFormationApiResponse(
+      'apprentissage',
+      requestUrl,
+      response.status,
+      payload,
+    );
     const data = Array.isArray(payload.data) ? payload.data : [];
     const pageCount = payload.pagination?.page_count ?? 1;
 
-    // Enrichment calls are independent per offer.  Running them concurrently
-    // keeps a 10-offer page responsive while retaining the four-source
-    // contract (Carif-Oref is deliberately not claimed until credentials are
-    // configured; see regionalFundingAvailable below).
+    // Enrichment calls are independent per offer and run concurrently.
     const results = await Promise.all(
       data.map((item: Record<string, any>) =>
-        this.apprentissageToFormation(item),
+        this.apprentissageToFormation(item, userCoordinates),
       ),
     );
 
@@ -479,6 +731,7 @@ export class ReconversionService {
 
   private async apprentissageToFormation(
     item: Record<string, any>,
+    userCoordinates?: Coordinates | null,
   ): Promise<Record<string, unknown>> {
     const formateur = item.formateur?.organisme;
     const responsable = item.responsable?.organisme;
@@ -493,7 +746,9 @@ export class ReconversionService {
     const contact = item.contact || {};
     const sessions = Array.isArray(item.sessions) ? item.sessions : [];
 
-    const rncpCode = this.normalizeRncpCode(certif.identifiant?.rncp);
+    const rncpCode = this.normalizeRncpCode(
+      certif.identifiant?.rncp ?? certif.identifiant?.rs,
+    );
     const cleMin = item.identifiant?.cle_ministere_educatif || '';
     const siret = org.identifiant?.siret || '';
     const id = `apprentissage:${cleMin || siret || rncpCode || Math.random().toString(36).slice(2)}`;
@@ -540,30 +795,37 @@ export class ReconversionService {
       ? certif.blocs_competences.rncp.map((b: any) => b.code).filter(Boolean)
       : [];
 
-    // Sessions
-    const nextSession =
-      sessions.length > 0 && sessions[0].debut
-        ? `Prochaine session : ${new Date(sessions[0].debut).toLocaleDateString('fr-FR')}`
-        : 'Sessions régulières';
-
     const now = new Date();
-    const normalizedSessions = sessions
-      .filter((s: any) => s.debut == null || new Date(s.debut) >= now)
-      .map((s: any) => {
-        const sAdresse = s.lieu?.adresse || {};
-        return {
-          debut: s.debut ? new Date(s.debut).toLocaleDateString('fr-FR') : null,
-          fin: s.fin ? new Date(s.fin).toLocaleDateString('fr-FR') : null,
-          lieu:
-            [sAdresse.label, sAdresse.commune?.nom]
-              .filter(Boolean)
-              .join(', ') || null,
-          modalite:
-            s.modalite?.entierement_a_distance === true
-              ? 'À distance'
-              : 'Présentiel / Mixte',
-        };
-      });
+    const upcomingSessions = sessions
+      .filter((s: any) => {
+        if (!s.debut) return false;
+        const debut = new Date(s.debut);
+        return !Number.isNaN(debut.getTime()) && debut >= now;
+      })
+      .sort(
+        (a: any, b: any) =>
+          new Date(a.debut).getTime() - new Date(b.debut).getTime(),
+      );
+    const nextSession = upcomingSessions[0]
+      ? [
+          `Prochaine session : ${new Date(upcomingSessions[0].debut).toLocaleDateString('fr-FR')}`,
+          upcomingSessions[0].capacite != null &&
+          Number.isFinite(Number(upcomingSessions[0].capacite))
+            ? `capacité ${upcomingSessions[0].capacite} places`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : 'Aucune session à venir publiée';
+
+    const normalizedSessions = upcomingSessions.map((s: any) => ({
+      debut: new Date(s.debut).toLocaleDateString('fr-FR'),
+      fin: s.fin ? new Date(s.fin).toLocaleDateString('fr-FR') : null,
+      capacite:
+        s.capacite != null && Number.isFinite(Number(s.capacite))
+          ? Number(s.capacite)
+          : null,
+    }));
 
     // Lieu
     const lieuStr =
@@ -579,8 +841,13 @@ export class ReconversionService {
       voieAcces.contrat_professionnalisation === true;
     const vaeAccessible = voieAcces.experience === true;
     const isDistance = modalite.entierement_a_distance === true;
+    const offerCoordinates = this.extractOfferCoordinates(item);
+    const distanceKm =
+      userCoordinates != null && offerCoordinates != null
+        ? this.distanceInKm(userCoordinates, offerCoordinates)
+        : null;
 
-    return {
+    const normalizedFormation = {
       id,
       cleMinistereEducatif: cleMin,
       siret,
@@ -589,17 +856,22 @@ export class ReconversionService {
       titreFormation: titre,
       certificationCode: rncpCode,
       niveauCertification: niveau,
+      dateFinEnregistrement:
+        certif.periode_validite?.rncp?.fin_enregistrement ||
+        certif.periode_validite?.rs?.fin_enregistrement ||
+        '',
+      dateLimiteDelivrance:
+        certif.periode_validite?.rncp?.fin ||
+        certif.periode_validite?.rs?.fin ||
+        '',
       isCertificationActive: realActiveStatus,
       rncpStatusVerified: koumoulActive != null,
       cpfEligibility,
       cpfOfferVerified: false,
       isQualiopi: qualiopi,
       qualiopiVerified: qualiopiFromAnnuaire != null,
-      // Carif-Oref requires a convention/API credential. Do not present an
-      // unverified regional funding badge as if it were factual.
-      regionalFundingAvailable: null,
-      regionalFundingStatus: 'non_configured',
       isDistance,
+      distanceKm,
       duree: modalite.duree_indicative
         ? `${modalite.duree_indicative} an(s)`
         : 'Durée selon parcours',
@@ -621,6 +893,8 @@ export class ReconversionService {
       vaeAccessible,
       onisepUrl: item.onisep?.url || '',
     };
+    this.logFormationTrace('apprentissage-normalized', normalizedFormation);
+    return normalizedFormation;
   }
 
   private async getKoumoulFormationPage(
@@ -639,23 +913,30 @@ export class ReconversionService {
       query.set('after', after);
     }
 
-    const response = await fetch(
-      `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
-    );
+    const requestUrl = `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`;
+    const response = await fetch(requestUrl);
     if (!response.ok) {
       throw new Error(`Koumoul indisponible (${response.status})`);
     }
 
     const payload = (await response.json()) as KoumoulPage;
+    this.logFormationApiResponse(
+      'koumoul',
+      requestUrl,
+      response.status,
+      payload,
+    );
     const results = Array.isArray(payload.results) ? payload.results : [];
 
-    return {
+    const page: FormationPage = {
       source: 'koumoul',
       results: results
         .filter((row) => this.isActiveExactRomeMatch(row, codeRome))
         .map((row) => this.koumoulCertificationToFormation(row)),
       nextCursor: this.cursorFromKoumoulNext(payload.next),
     };
+    this.logFormationTrace('koumoul-normalized-page', page);
+    return page;
   }
 
   private async getSupabaseFormationPage(
@@ -688,12 +969,19 @@ export class ReconversionService {
       this.supabaseCertificationToFormation(row as Record<string, unknown>),
     );
     const nextOffset = offset + results.length;
-    return {
+    const page: FormationPage = {
       source: 'supabase',
       results,
       nextCursor:
         count != null && nextOffset < count ? String(nextOffset) : null,
     };
+    this.logFormationTrace('supabase-page', {
+      codeRome,
+      offset,
+      count: count ?? null,
+      page,
+    });
+    return page;
   }
 
   /**
@@ -749,7 +1037,7 @@ export class ReconversionService {
     codeRome: string,
     koumoulId: string,
   ): Promise<Record<string, unknown>> {
-    const isRncp = /^RNCP\d+$/i.test(koumoulId);
+    const isRncp = /^(RNCP|RS)\d+$/i.test(koumoulId);
 
     if (isRncp) {
       const normalizedCode = koumoulId.toUpperCase();
@@ -768,6 +1056,12 @@ export class ReconversionService {
       if (!response.ok) throw new NotFoundException('Formation introuvable');
 
       const payload = (await response.json()) as KoumoulPage;
+      this.logFormationApiResponse(
+        'koumoul-rncp-status',
+        `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+        response.status,
+        payload,
+      );
       const results = Array.isArray(payload.results) ? payload.results : [];
       const match = results.find(
         (row) => this.normalizeRncpCode(row['NUMERO_FICHE']) === normalizedCode,
@@ -850,6 +1144,7 @@ export class ReconversionService {
       cpfOfferVerified: false,
       etatFiche: this.text(row['ETAT_FICHE']),
       dateFinEnregistrement: this.text(row['date_fin_enregistrement']),
+      dateLimiteDelivrance: this.text(row['date_limite_delivrance']),
       prerequis: this.text(row['prerequis_entree_formation']),
       blocsCompetences: this.splitValues(row['blocs_competences_libelles']),
       blocsCompetencesCodes: this.splitValues(row['blocs_competences_codes']),
@@ -907,6 +1202,7 @@ export class ReconversionService {
       isDistance: false,
       etatFiche: this.text(row['etat_libelle']),
       dateFinEnregistrement: this.text(row['date_maj']),
+      dateLimiteDelivrance: '',
       prerequis: '',
       blocsCompetences: [],
       blocsCompetencesCodes: [],
@@ -941,15 +1237,38 @@ export class ReconversionService {
       const response = await fetch(
         `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
       );
-      if (!response.ok) return null;
+      const requestUrl = `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`;
+      if (!response.ok) {
+        this.logFormationTrace('koumoul-status-error', {
+          rncpCode,
+          status: response.status,
+          url: requestUrl,
+        });
+        return null;
+      }
 
       const payload = (await response.json()) as KoumoulPage;
+      this.logFormationApiResponse(
+        'koumoul-rncp-status',
+        requestUrl,
+        response.status,
+        payload,
+      );
       const row = (payload.results ?? []).find(
         (candidate) =>
           this.normalizeRncpCode(candidate['NUMERO_FICHE']) === rncpCode,
       );
-      return row == null ? null : row['ACTIF'] === true;
-    } catch (_) {
+      const isCertificationActive = row == null ? null : row['ACTIF'] === true;
+      this.logFormationTrace('koumoul-status-decision', {
+        rncpCode,
+        isCertificationActive,
+      });
+      return isCertificationActive;
+    } catch (error) {
+      this.logFormationTrace('koumoul-status-exception', {
+        rncpCode,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -963,14 +1282,39 @@ export class ReconversionService {
   private async getQualiopiStatus(siret: string): Promise<boolean | null> {
     if (!/^\d{14}$/.test(siret)) return null;
 
+    const cached = this.qualiopiCache.get(siret);
+    if (
+      cached &&
+      Date.now() - cached.checkedAt < ReconversionService.qualiopiCacheTtlMs
+    ) {
+      this.logFormationTrace('qualiopi-cache-hit', {
+        siret,
+        isQualiopi: cached.value,
+        checkedAt: new Date(cached.checkedAt).toISOString(),
+      });
+      return cached.value;
+    }
+
     const query = new URLSearchParams({ q: siret, per_page: '10' });
     try {
       const response = await fetch(
         `${ReconversionService.entreprisesApiUrl}?${query.toString()}`,
       );
-      if (!response.ok) return null;
+      if (!response.ok) {
+        this.logFormationTrace('recherche-entreprises-error', {
+          siret,
+          status: response.status,
+        });
+        return null;
+      }
 
       const payload = (await response.json()) as Record<string, any>;
+      this.logFormationApiResponse(
+        'recherche-entreprises',
+        `${ReconversionService.entreprisesApiUrl}?${query.toString()}`,
+        response.status,
+        payload,
+      );
       const enterprise = (
         Array.isArray(payload.results) ? payload.results : []
       ).find((candidate: Record<string, any>) => {
@@ -985,10 +1329,19 @@ export class ReconversionService {
         return establishmentSirets.includes(siret);
       });
 
-      return enterprise == null
-        ? null
-        : enterprise.complements?.est_qualiopi === true;
-    } catch (_) {
+      if (enterprise == null) {
+        this.logFormationTrace('qualiopi-no-siret-match', { siret });
+        return null;
+      }
+      const value = enterprise.complements?.est_qualiopi === true;
+      this.qualiopiCache.set(siret, { value, checkedAt: Date.now() });
+      this.logFormationTrace('qualiopi-decision', { siret, isQualiopi: value });
+      return value;
+    } catch (error) {
+      this.logFormationTrace('recherche-entreprises-exception', {
+        siret,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -997,7 +1350,13 @@ export class ReconversionService {
     raw: string | undefined,
   ): FormationSource | undefined {
     if (raw == null || raw.length === 0) return undefined;
-    if (raw === 'koumoul' || raw === 'supabase') return raw;
+    if (
+      raw === 'apprentissage' ||
+      raw === 'koumoul' ||
+      raw === 'supabase'
+    ) {
+      return raw;
+    }
     throw new BadRequestException('Source de formations invalide');
   }
 
@@ -1010,13 +1369,13 @@ export class ReconversionService {
     }
   }
 
-  // Koumoul writes RNCP12345 while CertifInfo stores 12345.  The app only
-  // receives the normalized format, making source comparisons deterministic.
+  // Koumoul writes RNCP12345 or RS12345 while CertifInfo can omit the prefix.
+  // Preserve an explicit RNCP/RS prefix and default unprefixed records to RNCP.
   private normalizeRncpCode(raw: unknown): string {
-    const value = this.text(raw)
-      .replace(/^RNCP\s*/i, '')
-      .trim();
-    return value.length === 0 ? '' : `RNCP${value}`;
+    const value = this.text(raw).replace(/\s+/g, '');
+    if (value.length === 0) return '';
+    const match = /^(RNCP|RS)(\d+)$/i.exec(value);
+    return match ? `${match[1].toUpperCase()}${match[2]}` : `RNCP${value}`;
   }
 
   private text(raw: unknown, fallback = ''): string {
