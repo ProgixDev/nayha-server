@@ -941,11 +941,13 @@ export class ReconversionService {
     );
     const results = Array.isArray(payload.results) ? payload.results : [];
 
+    const formations = results
+      .filter((row) => this.isActiveExactRomeMatch(row, codeRome))
+      .map((row) => this.koumoulCertificationToFormation(row));
+    await this.enrichFormationsWithMcfCpf(formations);
     const page: FormationPage = {
       source: 'koumoul',
-      results: results
-        .filter((row) => this.isActiveExactRomeMatch(row, codeRome))
-        .map((row) => this.koumoulCertificationToFormation(row)),
+      results: formations,
       nextCursor: this.cursorFromKoumoulNext(payload.next),
     };
     this.logFormationTrace('koumoul-normalized-page', page);
@@ -981,6 +983,7 @@ export class ReconversionService {
     const results = (data ?? []).map((row) =>
       this.supabaseCertificationToFormation(row as Record<string, unknown>),
     );
+    await this.enrichFormationsWithMcfCpf(results);
     const nextOffset = offset + results.length;
     const page: FormationPage = {
       source: 'supabase',
@@ -1104,7 +1107,15 @@ export class ReconversionService {
     );
 
     if (!match) throw new NotFoundException('Formation introuvable');
-    return this.koumoulCertificationToFormation(match);
+    const formation = this.koumoulCertificationToFormation(match);
+    // Enrich with MCF CPF check (no SIRET available at certification level)
+    const code = this.normalizeRncpCode(match['NUMERO_FICHE']);
+    const mcfActive = await this.checkMcfCpfEligibility(code);
+    if (mcfActive) {
+      formation['cpfEligibility'] = 'eligible';
+      formation['cpfOfferVerified'] = true;
+    }
+    return formation;
   }
 
   /**
@@ -1130,9 +1141,19 @@ export class ReconversionService {
       throw new NotFoundException('Formation introuvable');
     }
 
-    return this.supabaseCertificationToFormation(
+    const formation = this.supabaseCertificationToFormation(
       data as Record<string, unknown>,
     );
+    // Enrich with MCF CPF check
+    const code = this.normalizeRncpCode(
+      (data as Record<string, unknown>)['code_rncp'],
+    );
+    const mcfActive = await this.checkMcfCpfEligibility(code);
+    if (mcfActive) {
+      formation['cpfEligibility'] = 'eligible';
+      formation['cpfOfferVerified'] = true;
+    }
+    return formation;
   }
 
   private koumoulCertificationToFormation(
@@ -1433,6 +1454,41 @@ export class ReconversionService {
         error: error instanceof Error ? error.message : String(error),
       });
       return false;
+    }
+  }
+
+  /**
+   * Batch-enrich a list of formations with MCF CPF status.
+   * Runs checks in parallel for all unique RNCP codes.
+   */
+  private async enrichFormationsWithMcfCpf(
+    formations: Record<string, unknown>[],
+  ): Promise<void> {
+    const codes = [
+      ...new Set(
+        formations
+          .map((f) => String(f['certificationCode'] ?? ''))
+          .filter((c) => c.length > 0 && c !== '-1'),
+      ),
+    ];
+    if (codes.length === 0) return;
+
+    const results = await Promise.all(
+      codes.map(async (code) => ({
+        code,
+        active: await this.checkMcfCpfEligibility(code),
+      })),
+    );
+    const activeSet = new Set(
+      results.filter((r) => r.active).map((r) => r.code),
+    );
+
+    for (const f of formations) {
+      const code = String(f['certificationCode'] ?? '');
+      if (activeSet.has(code)) {
+        f['cpfEligibility'] = 'eligible';
+        f['cpfOfferVerified'] = true;
+      }
     }
   }
 
