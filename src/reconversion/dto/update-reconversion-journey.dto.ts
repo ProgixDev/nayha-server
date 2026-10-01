@@ -21,4 +21,8 @@ export class UpdateReconversionJourneyDto {
   @IsOptional()
   @IsObject()
   financement?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  contact?: Record<string, unknown>;
 }

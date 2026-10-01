@@ -1598,7 +1598,7 @@ export class ReconversionService {
     const { data: profile, error } = await this.supabase
       .from('user_profiles')
       .select(
-        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey',
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey, reconversion_contact_journey',
       )
       .eq('id', userId)
       .single();
@@ -1606,6 +1606,10 @@ export class ReconversionService {
     if (error || !profile) {
       throw new NotFoundException('Profil utilisateur introuvable');
     }
+
+    const contactJourneys = this.readAllSectionJourneys(
+      profile.reconversion_contact_journey,
+    );
 
     return {
       codeRome,
@@ -1625,6 +1629,7 @@ export class ReconversionService {
         profile.reconversion_financement_journey,
         codeRome,
       ),
+      contact: (contactJourneys[codeRome] as Record<string, unknown>) ?? {},
     };
   }
 
@@ -1637,7 +1642,8 @@ export class ReconversionService {
       dto.chemin == null &&
       dto.formations == null &&
       dto.immersion == null &&
-      dto.financement == null
+      dto.financement == null &&
+      dto.contact == null
     ) {
       throw new BadRequestException('Aucune donnée de parcours à enregistrer');
     }
@@ -1646,7 +1652,7 @@ export class ReconversionService {
     const { data: profile, error: readError } = await this.supabase
       .from('user_profiles')
       .select(
-        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey',
+        'reconversion_chemin_journey, reconversion_formations_journey, reconversion_immersion_journey, reconversion_financement_journey, reconversion_contact_journey',
       )
       .eq('id', userId)
       .single();
@@ -1666,6 +1672,9 @@ export class ReconversionService {
     );
     const financementJourneys = this.readAllSectionJourneys(
       profile.reconversion_financement_journey,
+    );
+    const contactJourneys = this.readAllSectionJourneys(
+      profile.reconversion_contact_journey,
     );
     const updatedAt = new Date().toISOString();
 
@@ -1697,6 +1706,13 @@ export class ReconversionService {
         updatedAt,
       );
     }
+    if (dto.contact != null) {
+      contactJourneys[codeRome] = {
+        ...((contactJourneys[codeRome] as Record<string, unknown>) ?? {}),
+        ...dto.contact,
+        updatedAt,
+      };
+    }
 
     const { error: updateError } = await this.supabase
       .from('user_profiles')
@@ -1705,6 +1721,7 @@ export class ReconversionService {
         reconversion_formations_journey: formationsJourneys,
         reconversion_immersion_journey: immersionJourneys,
         reconversion_financement_journey: financementJourneys,
+        reconversion_contact_journey: contactJourneys,
       })
       .eq('id', userId);
 
