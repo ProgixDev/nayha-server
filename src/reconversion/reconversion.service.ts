@@ -149,6 +149,13 @@ export class ReconversionService {
     'https://recherche-entreprises.api.gouv.fr/search';
   private static readonly adresseApiUrl =
     'https://api-adresse.data.gouv.fr/search';
+  private static readonly mcfCatalogueUrl =
+    'https://opendata.caissedesdepots.fr/api/explore/v2.1/catalog/datasets/moncompteformation_catalogueformation/records';
+  private static readonly mcfCacheTtlMs = 24 * 60 * 60 * 1000;
+  private readonly mcfCache = new Map<
+    string,
+    { hasActiveOffer: boolean; checkedAt: number }
+  >();
   private static readonly qualiopiCacheTtlMs = 24 * 60 * 60 * 1000;
   private static readonly geocodingCacheTtlMs = 7 * 24 * 60 * 60 * 1000;
   private readonly qualiopiCache = new Map<
@@ -753,10 +760,12 @@ export class ReconversionService {
     const siret = org.identifiant?.siret || '';
     const id = `apprentissage:${cleMin || siret || rncpCode || Math.random().toString(36).slice(2)}`;
 
-    const [koumoulActive, qualiopiFromAnnuaire] = await Promise.all([
-      this.getKoumoulActiveStatus(rncpCode),
-      this.getQualiopiStatus(siret),
-    ]);
+    const [koumoulActive, qualiopiFromAnnuaire, mcfCpfActive] =
+      await Promise.all([
+        this.getKoumoulActiveStatus(rncpCode),
+        this.getQualiopiStatus(siret),
+        this.checkMcfCpfEligibility(rncpCode, siret),
+      ]);
     // A temporary external outage must not turn a known offer into an
     // ineligible one.  The verification flags let clients distinguish the
     // official enrichment from the catalogue's own metadata.
@@ -764,11 +773,15 @@ export class ReconversionService {
       koumoulActive ?? certif.periode_validite?.rncp?.actif === true;
     const realQualiopiStatus =
       qualiopiFromAnnuaire ?? specific.qualiopi === true;
-    // An active RNCP is necessary for CPF eligibility, but it does not prove
-    // that this particular provider/session is published on Mon Compte
-    // Formation. Until an offer-level source is connected, never advertise
-    // the offer as CPF-eligible.
-    const cpfEligibility = koumoulActive === false ? 'ineligible' : 'to_verify';
+    // Check CPF eligibility using Mon Compte Formation catalogue.
+    // If the offer exists in MCF with active sessions → eligible + verified.
+    // If RNCP is inactive → ineligible. Otherwise → to_verify.
+    const cpfEligibility = mcfCpfActive
+      ? 'eligible'
+      : koumoulActive === false
+        ? 'ineligible'
+        : 'to_verify';
+    const cpfOfferVerified = mcfCpfActive;
 
     const nomOrg =
       uniteLegale.raison_sociale ||
@@ -867,7 +880,7 @@ export class ReconversionService {
       isCertificationActive: realActiveStatus,
       rncpStatusVerified: koumoulActive != null,
       cpfEligibility,
-      cpfOfferVerified: false,
+      cpfOfferVerified,
       isQualiopi: qualiopi,
       qualiopiVerified: qualiopiFromAnnuaire != null,
       isDistance,
@@ -1343,6 +1356,79 @@ export class ReconversionService {
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  }
+
+  /**
+   * Check if a formation has an active CPF offer on Mon Compte Formation.
+   * Uses the Caisse des Dépôts open data API (no auth required).
+   * Results are cached for 24 hours.
+   */
+  private async checkMcfCpfEligibility(
+    codeRncp: string,
+    siret?: string,
+  ): Promise<boolean> {
+    if (!codeRncp || codeRncp === '-1') return false;
+
+    const cacheKey = `${codeRncp}:${siret ?? '*'}`;
+    const cached = this.mcfCache.get(cacheKey);
+    if (
+      cached &&
+      Date.now() - cached.checkedAt < ReconversionService.mcfCacheTtlMs
+    ) {
+      this.logFormationTrace('mcf-cache-hit', {
+        codeRncp,
+        siret,
+        hasActiveOffer: cached.hasActiveOffer,
+      });
+      return cached.hasActiveOffer;
+    }
+
+    try {
+      // Build the where clause: match RNCP code + active sessions
+      let where = `code_rncp="${codeRncp}" AND nb_session_active>0`;
+      if (siret) {
+        where += ` AND siret="${siret}"`;
+      }
+
+      const params = new URLSearchParams({
+        where,
+        limit: '1',
+        select: 'nb_session_active',
+      });
+
+      const response = await fetch(
+        `${ReconversionService.mcfCatalogueUrl}?${params.toString()}`,
+      );
+
+      if (!response.ok) {
+        this.logFormationTrace('mcf-api-error', {
+          codeRncp,
+          siret,
+          status: response.status,
+        });
+        return false;
+      }
+
+      const payload = (await response.json()) as Record<string, any>;
+      const hasActiveOffer =
+        typeof payload.total_count === 'number' && payload.total_count > 0;
+
+      this.mcfCache.set(cacheKey, { hasActiveOffer, checkedAt: Date.now() });
+      this.logFormationTrace('mcf-cpf-decision', {
+        codeRncp,
+        siret,
+        hasActiveOffer,
+        totalOffers: payload.total_count,
+      });
+      return hasActiveOffer;
+    } catch (error) {
+      this.logFormationTrace('mcf-api-exception', {
+        codeRncp,
+        siret,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
     }
   }
 
