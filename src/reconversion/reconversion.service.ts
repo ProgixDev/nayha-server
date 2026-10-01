@@ -1410,41 +1410,57 @@ export class ReconversionService {
     }
 
     try {
-      // Build the where clause: match RNCP code + active sessions
-      let where = `code_rncp="${numericCode}" AND nb_session_active>0`;
+      // First try with SIRET for exact match, then fallback to RNCP-only.
+      // Different establishments of the same org may have different SIRETs.
+      const baseWhere = `code_rncp="${numericCode}" AND nb_session_active>0`;
+
+      let hasActiveOffer = false;
+
       if (siret) {
-        where += ` AND siret="${siret}"`;
-      }
-
-      const params = new URLSearchParams({
-        where,
-        limit: '1',
-        select: 'nb_session_active',
-      });
-
-      const response = await fetch(
-        `${ReconversionService.mcfCatalogueUrl}?${params.toString()}`,
-      );
-
-      if (!response.ok) {
-        this.logFormationTrace('mcf-api-error', {
-          codeRncp,
-          siret,
-          status: response.status,
+        const siretParams = new URLSearchParams({
+          where: `${baseWhere} AND siret="${siret}"`,
+          limit: '1',
+          select: 'nb_session_active',
         });
-        return false;
+        const siretRes = await fetch(
+          `${ReconversionService.mcfCatalogueUrl}?${siretParams.toString()}`,
+        );
+        if (siretRes.ok) {
+          const siretPayload = (await siretRes.json()) as Record<string, any>;
+          hasActiveOffer =
+            typeof siretPayload.total_count === 'number' &&
+            siretPayload.total_count > 0;
+        }
       }
 
-      const payload = (await response.json()) as Record<string, any>;
-      const hasActiveOffer =
-        typeof payload.total_count === 'number' && payload.total_count > 0;
+      // Fallback: check by RNCP code only (any provider)
+      if (!hasActiveOffer) {
+        const params = new URLSearchParams({
+          where: baseWhere,
+          limit: '1',
+          select: 'nb_session_active',
+        });
+        const response = await fetch(
+          `${ReconversionService.mcfCatalogueUrl}?${params.toString()}`,
+        );
+        if (!response.ok) {
+          this.logFormationTrace('mcf-api-error', {
+            codeRncp,
+            siret,
+            status: response.status,
+          });
+          return false;
+        }
+        const payload = (await response.json()) as Record<string, any>;
+        hasActiveOffer =
+          typeof payload.total_count === 'number' && payload.total_count > 0;
+      }
 
       this.mcfCache.set(cacheKey, { hasActiveOffer, checkedAt: Date.now() });
       this.logFormationTrace('mcf-cpf-decision', {
         codeRncp,
         siret,
         hasActiveOffer,
-        totalOffers: payload.total_count,
       });
       return hasActiveOffer;
     } catch (error) {
