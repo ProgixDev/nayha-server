@@ -1370,7 +1370,11 @@ export class ReconversionService {
   ): Promise<boolean> {
     if (!codeRncp || codeRncp === '-1') return false;
 
-    const cacheKey = `${codeRncp}:${siret ?? '*'}`;
+    // MCF API expects numeric code only (e.g. "40692"), not "RNCP40692"
+    const numericCode = codeRncp.replace(/^(RNCP|RS)/i, '');
+    if (!numericCode || numericCode === '-1') return false;
+
+    const cacheKey = `${numericCode}:${siret ?? '*'}`;
     const cached = this.mcfCache.get(cacheKey);
     if (
       cached &&
@@ -1386,7 +1390,7 @@ export class ReconversionService {
 
     try {
       // Build the where clause: match RNCP code + active sessions
-      let where = `code_rncp="${codeRncp}" AND nb_session_active>0`;
+      let where = `code_rncp="${numericCode}" AND nb_session_active>0`;
       if (siret) {
         where += ` AND siret="${siret}"`;
       }
