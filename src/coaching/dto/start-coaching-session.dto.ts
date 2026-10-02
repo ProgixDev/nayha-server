@@ -1,4 +1,11 @@
-import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class StartCoachingSessionDto {
   @IsOptional()
@@ -10,4 +17,9 @@ export class StartCoachingSessionDto {
   @Min(0)
   @Max(10)
   confidenceBefore?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  initialMessage?: string;
 }

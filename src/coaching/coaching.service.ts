@@ -47,13 +47,23 @@ export class CoachingService {
     if (error || !session)
       throw new Error(error?.message ?? 'Unable to create coaching session');
 
-    await this.insertMessage(
-      userId,
-      session.id,
-      1,
-      'coach',
-      guidedQuestions[0],
-    );
+    const initialMessage = dto.initialMessage?.trim();
+    if (initialMessage) {
+      await this.insertMessage(userId, session.id, 1, 'user', initialMessage);
+      const openingReply = await this.generateOpeningReply(
+        userContext,
+        initialMessage,
+      ).catch(() => `Merci de me le confier. ${guidedQuestions[0]}`);
+      await this.insertMessage(userId, session.id, 2, 'coach', openingReply);
+    } else {
+      await this.insertMessage(
+        userId,
+        session.id,
+        1,
+        'coach',
+        guidedQuestions[0],
+      );
+    }
     return this.get(userId, session.id);
   }
 
@@ -374,5 +384,29 @@ export class CoachingService {
       throw new Error('Invalid coaching report');
     }
     return { blocker, insight, report };
+  }
+
+  private async generateOpeningReply(
+    userContext: Record<string, any>,
+    initialMessage: string,
+  ) {
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.45,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Tu es le coach confiance professionnel de NAYHA. Réponds avec empathie à la personne, puis pose une seule question concrète pour commencer un coaching de quatre étapes. Réponse en français, 55 mots maximum, sans diagnostic médical ni promesse. Utilise le contexte sans citer de données personnelles inutilement.',
+        },
+        {
+          role: 'user',
+          content: `Contexte complet :\n${JSON.stringify(userContext)}\n\nMessage de la personne : ${initialMessage}`,
+        },
+      ],
+    });
+    const reply = completion.choices[0]?.message?.content?.trim();
+    if (!reply) throw new Error('Empty coaching opening reply');
+    return reply;
   }
 }
