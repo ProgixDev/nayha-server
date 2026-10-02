@@ -27,11 +27,12 @@ export class CoachingService {
 
   async start(userId: string, dto: StartCoachingSessionDto) {
     const userContext = await this.loadUserContext(userId);
+    const shortTitle = this.formatTitle(dto.triggerContext || dto.initialMessage);
     const { data: session, error } = await this.supabase
       .from('coaching_sessions')
       .insert({
         user_id: userId,
-        trigger_context: dto.triggerContext?.trim() || null,
+        trigger_context: shortTitle,
         confidence_before: dto.confidenceBefore ?? null,
         user_context: userContext,
       })
@@ -62,14 +63,27 @@ export class CoachingService {
     return this.get(userId, session.id);
   }
 
-  async list(userId: string) {
-    const { data, error } = await this.supabase
+  async list(userId: string, pageValue?: string, pageSizeValue?: string) {
+    const page = Math.max(1, Number.parseInt(pageValue ?? '1', 10) || 1);
+    const pageSize = Math.min(
+      30,
+      Math.max(1, Number.parseInt(pageSizeValue ?? '10', 10) || 10),
+    );
+    const from = (page - 1) * pageSize;
+    const { data, error, count } = await this.supabase
       .from('coaching_sessions')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
     if (error) throw new Error(error.message);
-    return data ?? [];
+    return {
+      items: data ?? [],
+      page,
+      pageSize,
+      total: count ?? 0,
+      hasMore: from + (data?.length ?? 0) < (count ?? 0),
+    };
   }
 
   /**
@@ -295,6 +309,46 @@ export class CoachingService {
     if (error) throw new Error(error.message);
   }
 
+  public formatTitle(text?: string | null): string {
+    if (!text || !text.trim()) return 'Coaching confiance';
+    const clean = text
+      .trim()
+      .replace(/[?!.:;]+$/g, '')
+      .replace(/\s+/g, ' ');
+    const lower = clean.toLowerCase();
+
+    if (lower.includes('reprendre confiance') || lower.includes('confiance')) {
+      if (lower.includes('pause')) return 'Confiance après pause';
+      if (lower.includes('postuler')) return 'Confiance pour postuler';
+      return 'Reprendre confiance en soi';
+    }
+    if (lower.includes('parcours') || lower.includes('parler')) {
+      return 'Valoriser mon parcours';
+    }
+    if (
+      lower.includes('peur') ||
+      lower.includes('hauteur') ||
+      lower.includes('doute') ||
+      lower.includes('légitime') ||
+      lower.includes('illégitime')
+    ) {
+      return 'Surmonter mes doutes';
+    }
+    if (lower.includes('entretien')) {
+      return 'Préparer un entretien';
+    }
+    if (lower.includes('reconversion') || lower.includes('métier') || lower.includes('voie')) {
+      return 'Clarifier ma reconversion';
+    }
+    if (lower.includes('activité') || lower.includes('création') || lower.includes('client')) {
+      return 'Lancer mon activité';
+    }
+
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length <= 4) return words.join(' ');
+    return words.slice(0, 4).join(' ');
+  }
+
   private summaryOf(text: string) {
     const normalized = text.replace(/\s+/g, ' ').trim();
     return normalized.length <= 180
@@ -354,7 +408,7 @@ export class CoachingService {
         {
           role: 'system',
           content:
-            'Tu rédiges le bilan bref d’un coaching de confiance professionnelle. Réponds uniquement en JSON avec blocker, insight et report. Chaque valeur doit être une chaîne en français. Ton: chaleureux, non clinique, sans diagnostic médical, sans promesse. blocker: 3 à 12 mots. insight: une phrase de 25 mots maximum. report: deux phrases de 60 mots maximum au total.',
+            'Tu rédiges le bilan bref d’un coaching de confiance professionnelle. Réponds uniquement en JSON avec blocker, insight et report. Chaque valeur doit être une chaîne en français. Ton: chaleureux, non clinique, sans diagnostic médical, sans promesse. blocker: Titre court du sujet abordé en 3 à 4 mots maximum (ex: "Reprendre confiance en soi", "Valoriser son parcours", "Préparer un entretien"). insight: une phrase de 25 mots maximum. report: deux phrases de 60 mots maximum au total.',
         },
         {
           role: 'user',
@@ -365,7 +419,7 @@ export class CoachingService {
     const content = completion.choices[0]?.message?.content;
     if (!content) throw new Error('Empty coaching report');
     const parsed = JSON.parse(content) as Record<string, unknown>;
-    const blocker = this.summaryOf(String(parsed.blocker ?? ''));
+    const blocker = this.formatTitle(String(parsed.blocker ?? ''));
     const insight = this.summaryOf(String(parsed.insight ?? ''));
     const report = this.summaryOf(String(parsed.report ?? ''));
     if (!blocker || !insight || !report) {

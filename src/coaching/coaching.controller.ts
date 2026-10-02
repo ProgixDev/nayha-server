@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
@@ -30,8 +31,12 @@ export class CoachingController {
   }
 
   @Get('sessions')
-  list(@CurrentUser() user: AuthUser) {
-    return this.coachingService.list(user.id);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.coachingService.list(user.id, page, pageSize);
   }
 
   @Get('offer')
