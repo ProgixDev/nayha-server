@@ -1,0 +1,69 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
+import { BlogService } from './blog.service';
+import { CreateBlogArticleDto } from './dto/create-blog-article.dto';
+import { UpdateBlogArticleDto } from './dto/update-blog-article.dto';
+
+@Controller('blog')
+export class BlogController {
+  constructor(private readonly blogService: BlogService) {}
+
+  // ── Public Endpoints for Mobile App & Web ───────────────────────────────────
+
+  @Get('articles')
+  async listArticles(
+    @Query('category') category?: string,
+    @Query('search') search?: string,
+  ) {
+    const articles = await this.blogService.list(category, search);
+    return { articles };
+  }
+
+  @Get('categories')
+  async getCategories() {
+    const categories = await this.blogService.getCategories();
+    return { categories };
+  }
+
+  @Get('articles/:id')
+  async getArticle(@Param('id') id: string) {
+    const article = await this.blogService.get(id);
+    return { article };
+  }
+
+  // ── Admin Endpoints ────────────────────────────────────────────────────────
+
+  @Get('admin/articles')
+  async listAdminArticles() {
+    const articles = await this.blogService.listAdmin();
+    return { articles };
+  }
+
+  @Post('admin/articles')
+  async createArticle(@Body() dto: CreateBlogArticleDto) {
+    const article = await this.blogService.create(dto);
+    return { article };
+  }
+
+  @Put('admin/articles/:id')
+  async updateArticle(
+    @Param('id') id: string,
+    @Body() dto: UpdateBlogArticleDto,
+  ) {
+    const article = await this.blogService.update(id, dto);
+    return { article };
+  }
+
+  @Delete('admin/articles/:id')
+  async deleteArticle(@Param('id') id: string) {
+    return this.blogService.remove(id);
+  }
+}

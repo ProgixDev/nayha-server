@@ -9,6 +9,7 @@ import { CandidaturesModule } from './candidatures/candidatures.module';
 import { CommunityModule } from './community/community.module';
 import { ReconversionModule } from './reconversion/reconversion.module';
 import { CoachingModule } from './coaching/coaching.module';
+import { BlogModule } from './blog/blog.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -25,6 +26,7 @@ import { HealthController } from './health.controller';
     CommunityModule,
     ReconversionModule,
     CoachingModule,
+    BlogModule,
   ],
   controllers: [HealthController],
 })
