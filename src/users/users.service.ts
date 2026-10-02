@@ -97,6 +97,7 @@ export class UsersService {
       parcours_type?: string;
       parcours_analyse_completed?: boolean;
       parcours_first_candidature_completed?: boolean;
+      evaluation_finished?: boolean;
       retour_emploi_evaluation_completed?: boolean;
       ateliers_emploi_watched?: string[];
       actions_semaine_count?: number;

@@ -74,6 +74,10 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsBoolean()
+  evaluation_finished?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   retour_emploi_evaluation_completed?: boolean;
 
   @IsOptional()
