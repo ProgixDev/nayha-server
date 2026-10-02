@@ -44,6 +44,11 @@ export class CoachingController {
     return this.coachingService.getOffer(user.id);
   }
 
+  @Get('suggestions')
+  suggestions(@CurrentUser() user: AuthUser) {
+    return this.coachingService.getSuggestions(user.id);
+  }
+
   @Get('sessions/:id')
   get(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.coachingService.get(user.id, id);

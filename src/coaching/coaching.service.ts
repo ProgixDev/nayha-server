@@ -155,6 +155,84 @@ export class CoachingService {
     return { shouldOffer: false, reason: null, message: null };
   }
 
+  async getSuggestions(
+    userId: string,
+  ): Promise<Array<{ title: string; question: string }>> {
+    const fallback = [
+      {
+        title: 'Reprendre confiance en soi',
+        question:
+          'Comment reprendre confiance pour postuler à de nouvelles opportunités ?',
+      },
+      {
+        title: 'Valoriser mon parcours',
+        question:
+          'Comment bien présenter mon parcours et expliquer mes transitions ?',
+      },
+      {
+        title: 'Surmonter mes doutes',
+        question:
+          'Comment dépasser le sentiment d’illégitimité et avancer sereinement ?',
+      },
+      {
+        title: 'Préparer un entretien',
+        question:
+          'Comment me préparer avec clarté et assurance avant un entretien ?',
+      },
+    ];
+
+    try {
+      const userContext = await this.loadUserContext(userId);
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.5,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: `Tu es le coach d'orientation et de confiance professionnelle de NAYHA.
+Génère une liste de 4 sujets de départ ("suggestions") personnalisés et pertinents pour aider la personne selon sa situation actuelle (candidatures, refus, entretiens, parcours, pause professionnelle).
+Réponds UNIQUEMENT en JSON avec la clé "suggestions" contenant une liste de 4 objets:
+- "title": Titre court du sujet, 3 à 4 mots maximum (ex: "Reprendre confiance en soi", "Préparer mon entretien", "Valoriser mon parcours", "Surmonter mes doutes").
+- "question": Première question claire, chaleureuse et concrète que la personne pose au coach (ex: "Comment aborder sereinement les questions difficiles en entretien ?").`,
+          },
+          {
+            role: 'user',
+            content: `Contexte complet de la personne :\n${JSON.stringify(userContext)}`,
+          },
+        ],
+      });
+
+      const content = completion.choices[0]?.message?.content;
+      if (!content) return fallback;
+      const parsed = JSON.parse(content) as {
+        suggestions?: Array<{ title?: string; question?: string }>;
+      };
+      const rawList = parsed.suggestions;
+      if (!Array.isArray(rawList) || rawList.length === 0) return fallback;
+
+      const results = rawList
+        .filter(
+          (item) =>
+            item &&
+            typeof item.title === 'string' &&
+            typeof item.question === 'string',
+        )
+        .map((item) => ({
+          title: this.formatTitle(item.title),
+          question: item.question!.trim(),
+        }))
+        .filter((item) => item.title.length > 0 && item.question.length > 0);
+
+      if (results.length >= 3) {
+        return results.slice(0, 4);
+      }
+      return fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   async get(userId: string, id: string) {
     const session = await this.findSession(userId, id);
     const { data: messages, error } = await this.supabase
