@@ -9,13 +9,6 @@ import OpenAI from 'openai';
 import { CompleteCoachingSessionDto } from './dto/complete-coaching-session.dto';
 import { StartCoachingSessionDto } from './dto/start-coaching-session.dto';
 
-const guidedQuestions = [
-  'Avant de chercher une solution, qu’est-ce qui te pèse le plus dans cette situation aujourd’hui ?',
-  'Quand cette pensée arrive, qu’est-ce qu’elle te fait faire — ou ne pas faire ?',
-  'Peux-tu te rappeler d’un fait concret qui montre que tu as déjà su traverser quelque chose de difficile ?',
-  'Quelle action suffisamment petite et réaliste pourrais-tu faire cette semaine, même sans te sentir totalement prête ?',
-];
-
 @Injectable()
 export class CoachingService {
   private readonly supabase: SupabaseClient;
@@ -47,23 +40,25 @@ export class CoachingService {
     if (error || !session)
       throw new Error(error?.message ?? 'Unable to create coaching session');
 
-    const initialMessage = dto.initialMessage?.trim();
-    if (initialMessage) {
+    const initialMessage = dto.initialMessage?.trim() || null;
+    if (initialMessage)
       await this.insertMessage(userId, session.id, 1, 'user', initialMessage);
-      const openingReply = await this.generateOpeningReply(
-        userContext,
-        initialMessage,
-      ).catch(() => `Merci de me le confier. ${guidedQuestions[0]}`);
-      await this.insertMessage(userId, session.id, 2, 'coach', openingReply);
-    } else {
-      await this.insertMessage(
-        userId,
-        session.id,
-        1,
-        'coach',
-        guidedQuestions[0],
-      );
-    }
+    const openingReply = await this.generateReply(
+      userContext,
+      initialMessage ? [{ sender: 'user', text: initialMessage }] : [],
+      true,
+    ).catch(() =>
+      initialMessage
+        ? 'Merci de me le confier. Je suis là pour t’écouter et avancer à ton rythme.'
+        : 'Bonjour, je suis là pour t’écouter. Tu peux commencer par ce qui te semble important aujourd’hui.',
+    );
+    await this.insertMessage(
+      userId,
+      session.id,
+      initialMessage ? 2 : 1,
+      'coach',
+      openingReply,
+    );
     return this.get(userId, session.id);
   }
 
@@ -169,57 +164,39 @@ export class CoachingService {
     const trimmed = text.trim();
     if (!trimmed) throw new BadRequestException('Message cannot be empty');
     const messages = await this.messages(userId, id);
-    const answerCount = messages.filter(
-      (message) => message.sender === 'user',
-    ).length;
-    if (answerCount >= guidedQuestions.length) {
-      throw new BadRequestException('The guided conversation is complete');
-    }
-
     let sequence = messages.length + 1;
     await this.insertMessage(userId, id, sequence++, 'user', trimmed);
-
-    const completedAnswers = answerCount + 1;
-    if (completedAnswers === guidedQuestions.length) {
-      const { error } = await this.supabase
-        .from('coaching_sessions')
-        .update({
-          status: 'ready_to_complete',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .eq('user_id', userId);
-      if (error) throw new Error(error.message);
-    } else {
-      await this.insertMessage(
-        userId,
-        id,
-        sequence,
-        'coach',
-        guidedQuestions[completedAnswers],
-      );
-    }
+    const reply = await this.generateReply(session.user_context ?? {}, [
+      ...messages,
+      { sender: 'user', text: trimmed },
+    ]).catch(
+      () =>
+        'Je t’entends. Prends le temps de me dire ce qui serait le plus utile pour toi maintenant.',
+    );
+    await this.insertMessage(userId, id, sequence, 'coach', reply);
     return this.get(userId, id);
   }
 
   async complete(userId: string, id: string, dto: CompleteCoachingSessionDto) {
     const session = await this.findSession(userId, id);
-    if (session.status !== 'ready_to_complete') {
-      throw new BadRequestException(
-        'Answer all four guided questions before completing the session',
-      );
+    if (session.status !== 'active' && session.status !== 'ready_to_complete') {
+      throw new BadRequestException('This coaching session has already ended');
     }
     const messages = await this.messages(userId, id);
     const firstAnswer =
       messages.find((message) => message.sender === 'user')?.text ?? '';
-    const commitment = dto.commitment.trim();
+    const commitment = dto.commitment?.trim() || null;
     const now = new Date();
-    const dueAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const dueAt = commitment
+      ? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+      : null;
     const fallback = {
-      blocker: this.summaryOf(firstAnswer),
+      blocker: this.summaryOf(firstAnswer) || 'Temps de réflexion',
       insight:
         'La confiance se construit aussi par une action réalisable, même imparfaite.',
-      report: `Tu as pris le temps d’identifier ce qui te freine et de choisir une action concrète. Ton point d’appui cette semaine : ${commitment}`,
+      report: commitment
+        ? `Tu as pris le temps d’identifier ce qui te freine. Ton point d’appui cette semaine : ${commitment}`
+        : 'Tu as pris un temps pour faire le point sur ce qui compte pour toi. Tu pourras revenir quand tu le souhaites.',
     };
     const personalized = await this.personalizeReport(
       session.user_context ?? {},
@@ -236,7 +213,7 @@ export class CoachingService {
         insight: personalized.insight,
         report: personalized.report,
         commitment,
-        commitment_due_at: dueAt.toISOString(),
+        commitment_due_at: dueAt?.toISOString() ?? null,
         completed_at: now.toISOString(),
         updated_at: now.toISOString(),
       })
@@ -244,6 +221,17 @@ export class CoachingService {
       .eq('user_id', userId);
     if (error) throw new Error(error.message);
     return this.get(userId, id);
+  }
+
+  async remove(userId: string, id: string) {
+    await this.findSession(userId, id);
+    const { error } = await this.supabase
+      .from('coaching_sessions')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+    if (error) throw new Error(error.message);
+    return { deleted: true };
   }
 
   async updateCommitment(
@@ -350,7 +338,7 @@ export class CoachingService {
   private async personalizeReport(
     userContext: Record<string, any>,
     messages: any[],
-    commitment: string,
+    commitment: string | null,
   ): Promise<{ blocker: string; insight: string; report: string }> {
     const transcript = messages
       .map(
@@ -370,7 +358,7 @@ export class CoachingService {
         },
         {
           role: 'user',
-          content: `Contexte complet connu de la personne :\n${JSON.stringify(userContext)}\n\nConversation:\n${transcript}\n\nEngagement choisi: ${commitment}`,
+          content: `Contexte complet connu de la personne :\n${JSON.stringify(userContext)}\n\nConversation:\n${transcript}\n\nEngagement choisi: ${commitment ?? 'Aucun'}`,
         },
       ],
     });
@@ -386,22 +374,28 @@ export class CoachingService {
     return { blocker, insight, report };
   }
 
-  private async generateOpeningReply(
+  private async generateReply(
     userContext: Record<string, any>,
-    initialMessage: string,
+    messages: Array<{ sender: string; text: string }>,
+    isOpening = false,
   ) {
+    const transcript = messages
+      .map(
+        (message) =>
+          `${message.sender === 'user' ? 'Personne' : 'Coach'}: ${message.text}`,
+      )
+      .join('\n');
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
       temperature: 0.45,
       messages: [
         {
           role: 'system',
-          content:
-            'Tu es le coach confiance professionnel de NAYHA. Réponds avec empathie à la personne, puis pose une seule question concrète pour commencer un coaching de quatre étapes. Réponse en français, 55 mots maximum, sans diagnostic médical ni promesse. Utilise le contexte sans citer de données personnelles inutilement.',
+          content: `Tu es le coach confiance professionnel de NAYHA. Tu accompagnes une conversation ouverte, sans questionnaire, nombre d’étapes imposé ni engagement obligatoire. Réponds avec empathie et de manière utile au dernier message. ${isOpening ? 'Si la personne n’a encore rien écrit, accueille-la avec une invitation ouverte.' : 'Pose au plus une question seulement si elle aide réellement à avancer.'} Réponse en français, 90 mots maximum, sans diagnostic médical ni promesse. Utilise le contexte sans citer de données personnelles inutilement.`,
         },
         {
           role: 'user',
-          content: `Contexte complet :\n${JSON.stringify(userContext)}\n\nMessage de la personne : ${initialMessage}`,
+          content: `Contexte complet :\n${JSON.stringify(userContext)}\n\nConversation :\n${transcript || '(La personne n’a pas encore écrit.)'}`,
         },
       ],
     });

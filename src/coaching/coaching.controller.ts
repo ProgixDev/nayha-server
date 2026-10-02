@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -41,6 +42,11 @@ export class CoachingController {
   @Get('sessions/:id')
   get(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.coachingService.get(user.id, id);
+  }
+
+  @Delete('sessions/:id')
+  remove(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.coachingService.remove(user.id, id);
   }
 
   @Post('sessions/:id/messages')

@@ -1,16 +1,9 @@
-import {
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
+import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CompleteCoachingSessionDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  commitment: string;
+  commitment?: string;
 
   @IsOptional()
   @IsNumber()
