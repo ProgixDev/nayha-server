@@ -425,6 +425,52 @@ export class UsersService {
     const maxTime = timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
     const lastActiveAt = new Date(maxTime).toISOString();
 
+    // Detect all active parcours
+    const activeParcoursSet = new Set<string>();
+
+    const normalizeParcours = (val?: string | null): string => {
+      if (!val) return '';
+      const k = val.toLowerCase().replace(/[^a-z]/g, '');
+      if (k.includes('retouremploi') || k.includes('retour')) return 'retour_emploi';
+      if (k.includes('reconversion')) return 'reconversion';
+      if (k.includes('creation') || k.includes('activite')) return 'creation_activite';
+      return val;
+    };
+
+    if (rawProfile?.parcours_type) {
+      const norm = normalizeParcours(rawProfile.parcours_type);
+      if (norm) activeParcoursSet.add(norm);
+    }
+
+    // Check if user has progress/journeys in reconversion
+    if (
+      (rawProfile?.reconversion_chemin_journey && Object.keys(rawProfile.reconversion_chemin_journey).length > 0) ||
+      (rawProfile?.reconversion_formations_journey && Object.keys(rawProfile.reconversion_formations_journey).length > 0) ||
+      (rawProfile?.reconversion_immersion_journey && Object.keys(rawProfile.reconversion_immersion_journey).length > 0) ||
+      (rawProfile?.reconversion_financement_journey && Object.keys(rawProfile.reconversion_financement_journey).length > 0) ||
+      (rawProfile?.reconversion_contact_journey && Object.keys(rawProfile.reconversion_contact_journey).length > 0)
+    ) {
+      activeParcoursSet.add('reconversion');
+    }
+
+    // Check if user has progress/journey in retour emploi
+    if (
+      rawProfile?.retour_emploi_journey &&
+      Object.keys(rawProfile.retour_emploi_journey).length > 0
+    ) {
+      activeParcoursSet.add('retour_emploi');
+    }
+
+    if (
+      rawProfile?.creation_activite_journey &&
+      Object.keys(rawProfile.creation_activite_journey).length > 0
+    ) {
+      activeParcoursSet.add('creation_activite');
+    }
+
+    const parcoursTypes = Array.from(activeParcoursSet);
+    const primaryParcours = parcoursTypes[0] || (rawProfile?.parcours_type ? normalizeParcours(rawProfile.parcours_type) : null);
+
     return {
       id: rawProfile?.id || authUser?.id,
       name,
@@ -437,7 +483,8 @@ export class UsersService {
       metier_selected: rawProfile?.metier_selected ?? false,
       has_paid: rawProfile?.has_paid ?? false,
       selected_metier_titre: rawProfile?.selected_metier_titre ?? '',
-      parcours_type: rawProfile?.parcours_type ?? null,
+      parcours_type: primaryParcours,
+      parcours_types: parcoursTypes,
       parcours_analyse_completed: rawProfile?.parcours_analyse_completed ?? false,
       parcours_first_candidature_completed: rawProfile?.parcours_first_candidature_completed ?? false,
       ateliers_emploi_watched: Array.isArray(rawProfile?.ateliers_emploi_watched)
