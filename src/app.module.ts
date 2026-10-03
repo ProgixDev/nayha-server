@@ -10,6 +10,7 @@ import { CommunityModule } from './community/community.module';
 import { ReconversionModule } from './reconversion/reconversion.module';
 import { CoachingModule } from './coaching/coaching.module';
 import { BlogModule } from './blog/blog.module';
+import { AteliersModule } from './ateliers/ateliers.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -27,6 +28,7 @@ import { HealthController } from './health.controller';
     ReconversionModule,
     CoachingModule,
     BlogModule,
+    AteliersModule,
   ],
   controllers: [HealthController],
 })
