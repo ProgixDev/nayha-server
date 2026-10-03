@@ -201,16 +201,73 @@ export class UsersService {
 
   async listAdmin() {
     try {
-      const { data, error } = await this.supabase
+      // 1. Fetch all Auth users
+      const { data: authData, error: authError } =
+        await this.supabase.auth.admin.listUsers();
+      const authUsers = (!authError && authData?.users) ? authData.users : [];
+
+      // 2. Fetch all Profiles
+      const { data: profiles, error: profileError } = await this.supabase
         .from('user_profiles')
         .select('*')
         .order('created_at', { ascending: false });
+      const profileList = (!profileError && profiles) ? profiles : [];
 
-      if (!error && data && data.length > 0) {
-        return data.map(this.mapFromDb);
+      // 3. Fetch Candidatures count per user
+      const { data: candidatures } = await this.supabase
+        .from('candidatures')
+        .select('user_id');
+
+      const candidaturesCountMap = new Map<string, number>();
+      if (candidatures) {
+        for (const c of candidatures) {
+          if (c.user_id) {
+            candidaturesCountMap.set(
+              c.user_id,
+              (candidaturesCountMap.get(c.user_id) || 0) + 1,
+            );
+          }
+        }
       }
-    } catch (_) {
-      // fallback
+
+      const profileMap = new Map<string, any>();
+      for (const p of profileList) {
+        profileMap.set(p.id, p);
+      }
+
+      const mergedUsers: any[] = [];
+      const seenIds = new Set<string>();
+
+      // Merge auth users with their profiles
+      for (const authUser of authUsers) {
+        seenIds.add(authUser.id);
+        const profile = profileMap.get(authUser.id) || {};
+        const candidaturesCount = candidaturesCountMap.get(authUser.id) || 0;
+        mergedUsers.push(
+          this.mapUser(authUser, profile, candidaturesCount),
+        );
+      }
+
+      // Add any orphaned profiles not in auth users
+      for (const profile of profileList) {
+        if (!seenIds.has(profile.id)) {
+          const candidaturesCount = candidaturesCountMap.get(profile.id) || 0;
+          mergedUsers.push(
+            this.mapUser(null, profile, candidaturesCount),
+          );
+        }
+      }
+
+      if (mergedUsers.length > 0) {
+        // Sort by last active / created_at desc
+        return mergedUsers.sort((a, b) => {
+          const tA = new Date(a.last_active_at || a.created_at).getTime();
+          const tB = new Date(b.last_active_at || b.created_at).getTime();
+          return tB - tA;
+        });
+      }
+    } catch (err) {
+      this.logger.error(`Error listing admin users: ${err}`);
     }
     return DEFAULT_ADMIN_USERS;
   }
@@ -235,17 +292,23 @@ export class UsersService {
 
   async getUserById(id: string) {
     try {
-      const { data, error } = await this.supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', id)
-        .single();
-      if (!error && data) {
-        return this.mapFromDb(data);
+      const [authRes, profileRes, candidaturesRes] = await Promise.all([
+        this.supabase.auth.admin.getUserById(id),
+        this.supabase.from('user_profiles').select('*').eq('id', id).maybeSingle(),
+        this.supabase.from('candidatures').select('id').eq('user_id', id),
+      ]);
+
+      const authUser = authRes.data?.user || null;
+      const profile = profileRes.data || null;
+      const candidaturesCount = candidaturesRes.data?.length || 0;
+
+      if (authUser || profile) {
+        return this.mapUser(authUser, profile || { id }, candidaturesCount);
       }
-    } catch (_) {
-      // fallback
+    } catch (err) {
+      this.logger.error(`Error getting user by id ${id}: ${err}`);
     }
+
     const found = DEFAULT_ADMIN_USERS.find((u) => u.id === id);
     if (!found) throw new NotFoundException('Utilisatrice introuvable');
     return found;
@@ -258,41 +321,98 @@ export class UsersService {
         .update({ is_blocked: isBlocked })
         .eq('id', id)
         .select()
-        .single();
-      if (!error && data) {
-        return this.mapFromDb(data);
-      }
-    } catch (_) {
-      // fallback
+        .maybeSingle();
+
+      return await this.getUserById(id);
+    } catch (err) {
+      this.logger.error(`Error toggling block user ${id}: ${err}`);
     }
+
     const found = DEFAULT_ADMIN_USERS.find((u) => u.id === id);
     if (found) found.is_blocked = isBlocked;
     return found;
   }
 
-  private mapFromDb(raw: any) {
-    const name = raw.name || raw.full_name || 'Utilisatrice NAYHA';
-    const email = raw.email || 'utilisatrice@nayha.fr';
+  private formatUserName(meta: any, email?: string): string {
+    if (meta) {
+      if (meta.full_name && typeof meta.full_name === 'string' && meta.full_name.trim()) {
+        return meta.full_name.trim();
+      }
+      if (meta.name && typeof meta.name === 'string' && meta.name.trim()) {
+        return meta.name.trim();
+      }
+      const first = meta.first_name || meta.prenom || '';
+      const last = meta.last_name || meta.nom || '';
+      const combined = `${first} ${last}`.trim();
+      if (combined) return combined;
+    }
+
+    if (email && email.includes('@')) {
+      const handle = email.split('@')[0];
+      const cleaned = handle
+        .replace(/[._\-+]+/g, ' ')
+        .replace(/\d+/g, '')
+        .trim();
+
+      if (cleaned.length > 1) {
+        return cleaned
+          .split(' ')
+          .filter(Boolean)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(' ');
+      }
+      return handle.charAt(0).toUpperCase() + handle.slice(1);
+    }
+
+    return 'Utilisatrice NAYHA';
+  }
+
+  private mapUser(authUser: any, rawProfile: any, candidaturesCount = 0) {
+    const email =
+      authUser?.email ||
+      rawProfile?.email ||
+      'utilisatrice@nayha.fr';
+
+    const name =
+      this.formatUserName(authUser?.user_metadata || rawProfile?.user_metadata, email);
+
+    const createdAt =
+      rawProfile?.created_at ||
+      authUser?.created_at ||
+      new Date().toISOString();
+
+    const lastActiveAt =
+      authUser?.last_sign_in_at ||
+      rawProfile?.updated_at ||
+      rawProfile?.last_active_at ||
+      rawProfile?.created_at ||
+      authUser?.created_at ||
+      new Date().toISOString();
+
     return {
-      id: raw.id,
+      id: rawProfile?.id || authUser?.id,
       name,
       email,
-      created_at: raw.created_at ?? new Date().toISOString(),
-      last_active_at: raw.last_active_at ?? raw.updated_at ?? raw.created_at ?? new Date().toISOString(),
-      rgpd_accepted: raw.rgpd_accepted ?? false,
-      diagnostic_vie_completed: raw.diagnostic_vie_completed ?? false,
-      diagnostic_pro_completed: raw.diagnostic_pro_completed ?? false,
-      metier_selected: raw.metier_selected ?? false,
-      has_paid: raw.has_paid ?? false,
-      selected_metier_titre: raw.selected_metier_titre ?? '',
-      parcours_type: raw.parcours_type ?? null,
-      parcours_analyse_completed: raw.parcours_analyse_completed ?? false,
-      parcours_first_candidature_completed: raw.parcours_first_candidature_completed ?? false,
-      ateliers_emploi_watched: Array.isArray(raw.ateliers_emploi_watched) ? raw.ateliers_emploi_watched : [],
-      actions_semaine_count: raw.actions_semaine_count ?? 0,
-      cv_generated: !!raw.cv_base,
-      linkedin_optimized: !!raw.linkedin_profil,
-      is_blocked: raw.is_blocked ?? false,
+      created_at: createdAt,
+      last_active_at: lastActiveAt,
+      rgpd_accepted: rawProfile?.rgpd_accepted ?? false,
+      diagnostic_vie_completed: rawProfile?.diagnostic_vie_completed ?? false,
+      diagnostic_pro_completed: rawProfile?.diagnostic_pro_completed ?? false,
+      metier_selected: rawProfile?.metier_selected ?? false,
+      has_paid: rawProfile?.has_paid ?? false,
+      selected_metier_titre: rawProfile?.selected_metier_titre ?? '',
+      parcours_type: rawProfile?.parcours_type ?? null,
+      parcours_analyse_completed: rawProfile?.parcours_analyse_completed ?? false,
+      parcours_first_candidature_completed: rawProfile?.parcours_first_candidature_completed ?? false,
+      ateliers_emploi_watched: Array.isArray(rawProfile?.ateliers_emploi_watched)
+        ? rawProfile.ateliers_emploi_watched
+        : [],
+      actions_semaine_count: candidaturesCount > 0
+        ? candidaturesCount
+        : (rawProfile?.actions_semaine_count ?? 0),
+      cv_generated: !!rawProfile?.cv_base,
+      linkedin_optimized: !!rawProfile?.linkedin_profil,
+      is_blocked: rawProfile?.is_blocked ?? false,
     };
   }
 }
