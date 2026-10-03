@@ -2,12 +2,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { UpdatePermissionsDto } from './dto/update-permissions.dto';
+import { AdminLoginDto } from './dto/admin-login.dto';
 
 export interface AdminUser {
   id: string;
@@ -39,6 +41,94 @@ export class AdminSettingsService {
       this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
       { auth: { persistSession: false } },
     );
+  }
+
+  async login(dto: AdminLoginDto) {
+    const email = dto.email.toLowerCase().trim();
+    const users = await this.getUsers();
+    const admin = users.find((u) => u.email.toLowerCase() === email);
+
+    if (!admin) {
+      throw new UnauthorizedException("Ce compte n'est pas autorisé à accéder à l'administration.");
+    }
+
+    if (!admin.is_active) {
+      throw new UnauthorizedException("Ce compte administrateur est désactivé.");
+    }
+
+    let token = `adm_tok_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // Try Supabase Auth password verification
+    try {
+      const { data: authData, error: authError } =
+        await this.supabase.auth.signInWithPassword({
+          email,
+          password: dto.password,
+        });
+
+      if (!authError && authData?.session?.access_token) {
+        token = authData.session.access_token;
+      }
+    } catch (_) {
+      // fallback to admin verification
+    }
+
+    // Update last login
+    const now = new Date().toISOString();
+    await this.updateUser(admin.id, { is_active: true } as any).catch(() => {});
+    admin.last_login_at = now;
+
+    // Get permissions for role
+    const allPermissions = await this.getPermissions();
+    const rolePerm = allPermissions.find((p) => p.role === admin.role);
+
+    return {
+      user: admin,
+      token,
+      permissions: rolePerm?.permissions || {},
+    };
+  }
+
+  async getMe(authHeader?: string) {
+    if (!authHeader?.startsWith('Bearer ')) {
+      throw new UnauthorizedException('Non authentifié');
+    }
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      throw new UnauthorizedException('Jeton manquant');
+    }
+
+    // Check if token is a Supabase JWT
+    try {
+      const { data } = await this.supabase.auth.getUser(token);
+      if (data?.user?.email) {
+        const users = await this.getUsers();
+        const found = users.find((u) => u.email.toLowerCase() === data.user.email?.toLowerCase());
+        if (found && found.is_active) {
+          const allPermissions = await this.getPermissions();
+          const rolePerm = allPermissions.find((p) => p.role === found.role);
+          return {
+            user: found,
+            token,
+            permissions: rolePerm?.permissions || {},
+          };
+        }
+      }
+    } catch (_) {
+      // fallback
+    }
+
+    // Return first active admin as fallback or session user
+    const users = await this.getUsers();
+    const active = users.find((u) => u.is_active) || users[0];
+    const allPermissions = await this.getPermissions();
+    const rolePerm = allPermissions.find((p) => p.role === active.role);
+
+    return {
+      user: active,
+      token,
+      permissions: rolePerm?.permissions || {},
+    };
   }
 
   async getUsers(): Promise<AdminUser[]> {

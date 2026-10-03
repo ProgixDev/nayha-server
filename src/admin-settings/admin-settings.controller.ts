@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -11,10 +12,21 @@ import { AdminSettingsService } from './admin-settings.service';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { UpdatePermissionsDto } from './dto/update-permissions.dto';
+import { AdminLoginDto } from './dto/admin-login.dto';
 
 @Controller('admin-settings')
 export class AdminSettingsController {
   constructor(private readonly adminSettingsService: AdminSettingsService) {}
+
+  @Post('login')
+  login(@Body() dto: AdminLoginDto) {
+    return this.adminSettingsService.login(dto);
+  }
+
+  @Get('me')
+  getMe(@Headers('authorization') auth: string) {
+    return this.adminSettingsService.getMe(auth);
+  }
 
   @Get('users')
   getUsers() {
