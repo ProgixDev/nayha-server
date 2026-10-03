@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -10,16 +18,41 @@ import { SubmitDiagnosticVieDto } from './dto/submit-diagnostic-vie.dto';
 import { SubmitDiagnosticProDto } from './dto/submit-diagnostic-pro.dto';
 
 @Controller('users')
-@UseGuards(SupabaseJwtGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  // ── Admin endpoints ────────────────────────────────────────────────────────
+
+  @Get('admin/all')
+  listAdmin() {
+    return this.usersService.listAdmin();
+  }
+
+  @Get('admin/stats')
+  getAdminStats() {
+    return this.usersService.getAdminStats();
+  }
+
+  @Get('admin/:id')
+  getUserById(@Param('id') id: string) {
+    return this.usersService.getUserById(id);
+  }
+
+  @Patch('admin/:id/block')
+  toggleBlockUser(@Param('id') id: string, @Body('is_blocked') isBlocked: boolean) {
+    return this.usersService.toggleBlockUser(id, isBlocked);
+  }
+
+  // ── Authenticated User endpoints ───────────────────────────────────────────
+
   @Get('me')
+  @UseGuards(SupabaseJwtGuard)
   getProfile(@CurrentUser() user: AuthUser) {
     return this.usersService.getProfile(user.id);
   }
 
   @Patch('me')
+  @UseGuards(SupabaseJwtGuard)
   updateProfile(
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateProfileDto,
@@ -28,6 +61,7 @@ export class UsersController {
   }
 
   @Post('me/diagnostic-vie')
+  @UseGuards(SupabaseJwtGuard)
   submitDiagnosticVie(
     @CurrentUser() user: AuthUser,
     @Body() dto: SubmitDiagnosticVieDto,
@@ -36,6 +70,7 @@ export class UsersController {
   }
 
   @Post('me/diagnostic-pro')
+  @UseGuards(SupabaseJwtGuard)
   submitDiagnosticPro(
     @CurrentUser() user: AuthUser,
     @Body() dto: SubmitDiagnosticProDto,
