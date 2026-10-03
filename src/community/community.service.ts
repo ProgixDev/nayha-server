@@ -193,4 +193,103 @@ export class CommunityService {
 
     return { reported: true };
   }
+
+  // ── Admin Operations ────────────────────────────────────────────────────────
+
+  async getAdminPosts() {
+    const [postsResult, reportsResult] = await Promise.all([
+      this.supabase
+        .from('community_posts')
+        .select('*')
+        .order('created_at', { ascending: false }),
+      this.supabase
+        .from('community_reports')
+        .select('*'),
+    ]);
+
+    if (postsResult.error) {
+      throw new Error(postsResult.error.message);
+    }
+
+    const reportsByPostId = new Map<string, any[]>();
+    (reportsResult.data ?? []).forEach((r) => {
+      const list = reportsByPostId.get(r.post_id) ?? [];
+      list.push(r);
+      reportsByPostId.set(r.post_id, list);
+    });
+
+    return (postsResult.data ?? []).map((post) => {
+      const reports = reportsByPostId.get(post.id) ?? [];
+      return {
+        id: post.id,
+        user_id: post.user_id,
+        auteur: post.auteur,
+        initiale: post.initiale,
+        contenu: post.contenu,
+        type: post.type,
+        reactions_count: post.reactions_count ?? 0,
+        is_moderated: post.is_moderated ?? false,
+        created_at: post.created_at,
+        reports_count: reports.length,
+        reports,
+      };
+    });
+  }
+
+  async getAdminReports() {
+    const { data, error } = await this.supabase
+      .from('community_reports')
+      .select('*, community_posts(id, auteur, contenu, type)')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return data ?? [];
+  }
+
+  async moderatePost(id: string, isModerated?: boolean) {
+    let target = isModerated;
+    if (target === undefined) {
+      const { data: current } = await this.supabase
+        .from('community_posts')
+        .select('is_moderated')
+        .eq('id', id)
+        .single();
+      target = !current?.is_moderated;
+    }
+
+    const { data, error } = await this.supabase
+      .from('community_posts')
+      .update({ is_moderated: target })
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return data;
+  }
+
+  async deletePost(id: string) {
+    // Delete associated reactions and reports first
+    await Promise.all([
+      this.supabase.from('community_reactions').delete().eq('post_id', id),
+      this.supabase.from('community_reports').delete().eq('post_id', id),
+    ]);
+
+    const { error } = await this.supabase
+      .from('community_posts')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return { success: true };
+  }
 }

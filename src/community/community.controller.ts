@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
+  Put,
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
@@ -16,11 +18,13 @@ import { CreatePostDto } from './dto/create-post.dto';
 import { ReportPostDto } from './dto/report-post.dto';
 
 @Controller('community')
-@UseGuards(SupabaseJwtGuard)
 export class CommunityController {
   constructor(private readonly communityService: CommunityService) {}
 
+  // ── Mobile App Endpoints (User Protected) ───────────────────────────────────
+
   @Get()
+  @UseGuards(SupabaseJwtGuard)
   getPosts(@CurrentUser() user: AuthUser) {
     return this.communityService.getPosts(user.id);
   }
@@ -31,6 +35,7 @@ export class CommunityController {
   }
 
   @Post()
+  @UseGuards(SupabaseJwtGuard)
   createPost(
     @CurrentUser() user: AuthUser,
     @Body() dto: CreatePostDto,
@@ -39,6 +44,7 @@ export class CommunityController {
   }
 
   @Post(':id/react')
+  @UseGuards(SupabaseJwtGuard)
   toggleReact(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
@@ -47,11 +53,40 @@ export class CommunityController {
   }
 
   @Post(':id/report')
+  @UseGuards(SupabaseJwtGuard)
   reportPost(
     @CurrentUser() user: AuthUser,
     @Param('id') id: string,
     @Body() dto: ReportPostDto,
   ) {
     return this.communityService.reportPost(user.id, id, dto);
+  }
+
+  // ── Admin Dashboard Endpoints ───────────────────────────────────────────────
+
+  @Get('admin/posts')
+  async getAdminPosts() {
+    const posts = await this.communityService.getAdminPosts();
+    return { posts };
+  }
+
+  @Get('admin/reports')
+  async getAdminReports() {
+    const reports = await this.communityService.getAdminReports();
+    return { reports };
+  }
+
+  @Put('admin/posts/:id/moderate')
+  async moderatePost(
+    @Param('id') id: string,
+    @Body() body?: { is_moderated?: boolean },
+  ) {
+    const post = await this.communityService.moderatePost(id, body?.is_moderated);
+    return { post };
+  }
+
+  @Delete('admin/posts/:id')
+  async deletePost(@Param('id') id: string) {
+    return this.communityService.deletePost(id);
   }
 }
