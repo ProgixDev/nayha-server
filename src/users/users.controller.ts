@@ -77,4 +77,10 @@ export class UsersController {
   ) {
     return this.usersService.submitDiagnosticPro(user.id, dto);
   }
+
+  @Post('me/touch')
+  @UseGuards(SupabaseJwtGuard)
+  touchActivity(@CurrentUser() user: AuthUser) {
+    return this.usersService.touchActivity(user.id);
+  }
 }

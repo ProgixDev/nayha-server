@@ -333,7 +333,32 @@ export class UsersService {
     return found;
   }
 
-  private formatUserName(meta: any, email?: string): string {
+  async touchActivity(userId: string) {
+    const now = new Date().toISOString();
+    await this.supabase
+      .from('user_profiles')
+      .update({ updated_at: now })
+      .eq('id', userId);
+    return { success: true, updated_at: now };
+  }
+
+  private formatUserName(meta: any, rawProfile?: any, email?: string): string {
+    // 1. Check diagnostic answers or CV name if user completed them
+    if (rawProfile?.diagnostic_vie_data) {
+      const pFirst = rawProfile.diagnostic_vie_data.name || rawProfile.diagnostic_vie_data.prenom || '';
+      const pLast = rawProfile.diagnostic_vie_data.nom || '';
+      const pName = `${pFirst} ${pLast}`.trim();
+      if (pName) return pName;
+    }
+    if (
+      rawProfile?.cv_base?.userName &&
+      typeof rawProfile.cv_base.userName === 'string' &&
+      rawProfile.cv_base.userName.trim()
+    ) {
+      return rawProfile.cv_base.userName.trim();
+    }
+
+    // 2. Check Auth user metadata
     if (meta) {
       if (meta.full_name && typeof meta.full_name === 'string' && meta.full_name.trim()) {
         return meta.full_name.trim();
@@ -347,6 +372,7 @@ export class UsersService {
       if (combined) return combined;
     }
 
+    // 3. Clean format from email handle
     if (email && email.includes('@')) {
       const handle = email.split('@')[0];
       const cleaned = handle
@@ -374,20 +400,30 @@ export class UsersService {
       'utilisatrice@nayha.fr';
 
     const name =
-      this.formatUserName(authUser?.user_metadata || rawProfile?.user_metadata, email);
+      this.formatUserName(
+        authUser?.user_metadata || rawProfile?.user_metadata,
+        rawProfile,
+        email,
+      );
 
     const createdAt =
       rawProfile?.created_at ||
       authUser?.created_at ||
       new Date().toISOString();
 
-    const lastActiveAt =
-      authUser?.last_sign_in_at ||
-      rawProfile?.updated_at ||
-      rawProfile?.last_active_at ||
-      rawProfile?.created_at ||
-      authUser?.created_at ||
-      new Date().toISOString();
+    const timestamps = [
+      rawProfile?.updated_at,
+      authUser?.last_sign_in_at,
+      rawProfile?.last_active_at,
+      rawProfile?.created_at,
+      authUser?.created_at,
+    ]
+      .filter(Boolean)
+      .map((t) => new Date(t).getTime())
+      .filter((t) => !isNaN(t));
+
+    const maxTime = timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
+    const lastActiveAt = new Date(maxTime).toISOString();
 
     return {
       id: rawProfile?.id || authUser?.id,

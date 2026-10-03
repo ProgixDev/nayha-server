@@ -43,6 +43,18 @@ export class SupabaseJwtGuard implements CanActivate {
       email: data.user.email,
     };
 
+    // Update activity timestamp in background (non-blocking)
+    (async () => {
+      try {
+        await this.supabase
+          .from('user_profiles')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', data.user.id);
+      } catch (_) {
+        // silent
+      }
+    })();
+
     return true;
   }
 }
