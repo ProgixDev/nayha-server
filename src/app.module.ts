@@ -11,6 +11,7 @@ import { ReconversionModule } from './reconversion/reconversion.module';
 import { CoachingModule } from './coaching/coaching.module';
 import { BlogModule } from './blog/blog.module';
 import { AteliersModule } from './ateliers/ateliers.module';
+import { AdminSettingsModule } from './admin-settings/admin-settings.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { HealthController } from './health.controller';
     CoachingModule,
     BlogModule,
     AteliersModule,
+    AdminSettingsModule,
   ],
   controllers: [HealthController],
 })
