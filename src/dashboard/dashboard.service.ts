@@ -64,7 +64,7 @@ export class DashboardService {
     const paidUsers = users.filter((u) => u.has_paid).length;
     const conversionRate = totalUsers > 0 ? Math.round((paidUsers / totalUsers) * 100) / 100 : 0;
 
-    // Candidatures from DB
+    // Real Candidatures from DB
     let totalCandidatures = 0;
     let entretiensObtenus = 0;
     let acceptees = 0;
@@ -74,7 +74,7 @@ export class DashboardService {
         .from('candidatures')
         .select('statut');
 
-      if (cands && cands.length > 0) {
+      if (cands) {
         totalCandidatures = cands.length;
         entretiensObtenus = cands.filter(
           (c) => c.statut === 'entretien' || c.statut === 'acceptee',
@@ -83,23 +83,17 @@ export class DashboardService {
       }
     } catch (_) {}
 
-    // Add baseline minimum to maintain dashboard visual richness if new database
-    if (totalCandidatures < 5) {
-      totalCandidatures = Math.max(totalCandidatures, totalUsers > 0 ? totalUsers * 2 : 12);
-      entretiensObtenus = Math.max(entretiensObtenus, 3);
-      acceptees = Math.max(acceptees, 1);
-    }
-
-    // AI calls & cost
+    // Real Coaching / AI sessions from DB
     let totalAiCalls = 0;
-    for (const u of users) {
-      if (u.diagnostic_vie_completed) totalAiCalls += 2;
-      if (u.diagnostic_pro_completed) totalAiCalls += 3;
-      if (u.cv_generated) totalAiCalls += 1;
-      if (u.linkedin_optimized) totalAiCalls += 1;
-    }
-    totalAiCalls = Math.max(totalAiCalls, totalUsers * 3, 24);
-    const totalAiCost = Math.round(totalAiCalls * 0.038 * 100) / 100;
+    try {
+      const { data: coaching } = await this.supabase
+        .from('coaching_sessions')
+        .select('id');
+      if (coaching) {
+        totalAiCalls = coaching.length;
+      }
+    } catch (_) {}
+    const totalAiCost = Math.round(totalAiCalls * 0.04 * 100) / 100;
 
     // Reported posts
     let reportedPosts = 0;
@@ -142,40 +136,12 @@ export class DashboardService {
     for (const u of users) {
       userMap.set(u.id, u.name);
 
-      activities.push({
-        id: `act-user-${u.id}`,
-        type: 'user_joined',
-        description: `${u.name} a rejoint Nayha`,
-        timestamp: u.created_at,
-        user_name: u.name,
-      });
-
-      if (u.ateliers_emploi_watched && u.ateliers_emploi_watched.length > 0) {
+      if (u.created_at) {
         activities.push({
-          id: `act-atelier-${u.id}`,
-          type: 'atelier_watched',
-          description: `${u.name} a visionné un atelier d'accompagnement`,
-          timestamp: u.last_active_at || u.created_at,
-          user_name: u.name,
-        });
-      }
-
-      if (u.cv_generated) {
-        activities.push({
-          id: `act-cv-${u.id}`,
-          type: 'ai_call',
-          description: `${u.name} a généré un CV optimisé avec l'IA`,
-          timestamp: u.last_active_at || u.created_at,
-          user_name: u.name,
-        });
-      }
-
-      if (u.diagnostic_vie_completed && u.diagnostic_pro_completed) {
-        activities.push({
-          id: `act-diag-${u.id}`,
+          id: `act-user-${u.id}`,
           type: 'user_joined',
-          description: `${u.name} a complété ses bilans diagnostiques`,
-          timestamp: u.last_active_at || u.created_at,
+          description: `${u.name} a rejoint Nayha`,
+          timestamp: u.created_at,
           user_name: u.name,
         });
       }
@@ -186,8 +152,7 @@ export class DashboardService {
       const { data: cands } = await this.supabase
         .from('candidatures')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
+        .order('created_at', { ascending: false });
 
       if (cands) {
         for (const c of cands) {
@@ -210,8 +175,7 @@ export class DashboardService {
       const { data: posts } = await this.supabase
         .from('community_posts')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
+        .order('created_at', { ascending: false });
 
       if (posts) {
         for (const p of posts) {
@@ -219,9 +183,30 @@ export class DashboardService {
           activities.push({
             id: `act-post-${p.id}`,
             type: 'post_created',
-            description: `${author} a publié dans la communauté : "${p.contenu?.slice(0, 45) || 'Message'}"`,
+            description: `${author} a publié dans la communauté : "${p.contenu?.slice(0, 50) || 'Message'}"`,
             timestamp: p.created_at,
             user_name: author,
+          });
+        }
+      }
+    } catch (_) {}
+
+    // 4. Fetch Coaching Sessions from DB
+    try {
+      const { data: sessions } = await this.supabase
+        .from('coaching_sessions')
+        .select('id, user_id, created_at')
+        .order('created_at', { ascending: false });
+
+      if (sessions) {
+        for (const s of sessions) {
+          const uName = userMap.get(s.user_id) || 'Une utilisatrice';
+          activities.push({
+            id: `act-coach-${s.id}`,
+            type: 'ai_call',
+            description: `${uName} a effectué une séance de coaching IA`,
+            timestamp: s.created_at,
+            user_name: uName,
           });
         }
       }
@@ -264,55 +249,57 @@ export class DashboardService {
       if (data) cands = data;
     } catch (_) {}
 
-    const usersPerDay = days.map((date, idx) => {
-      const real = users.filter((u) => (u.created_at || '').slice(0, 10) === date).length;
-      const baseline = (idx % 3 === 0 ? 2 : 1);
-      return {
-        date,
-        value: real > 0 ? real : baseline,
-      };
-    });
+    let posts: any[] = [];
+    try {
+      const { data } = await this.supabase
+        .from('community_posts')
+        .select('created_at');
+      if (data) posts = data;
+    } catch (_) {}
 
-    const candidaturesPerDay = days.map((date, idx) => {
-      const real = cands.filter(
+    let coaching: any[] = [];
+    try {
+      const { data } = await this.supabase
+        .from('coaching_sessions')
+        .select('created_at');
+      if (data) coaching = data;
+    } catch (_) {}
+
+    const usersPerDay = days.map((date) => ({
+      date,
+      value: users.filter((u) => (u.created_at || '').slice(0, 10) === date).length,
+    }));
+
+    const candidaturesPerDay = days.map((date) => ({
+      date,
+      value: cands.filter(
         (c) => (c.date_envoi || c.created_at || '').slice(0, 10) === date,
-      ).length;
-      const baseline = (idx % 2 === 0 ? 3 : 1);
-      return {
-        date,
-        value: real > 0 ? real : baseline,
-      };
-    });
+      ).length,
+    }));
 
-    const aiCallsPerDay = days.map((date, idx) => {
-      const userActive = users.filter(
-        (u) => (u.last_active_at || '').slice(0, 10) === date,
-      ).length;
-      const val = userActive > 0 ? userActive * 4 : (idx % 2 === 0 ? 5 : 3);
-      return {
-        date,
-        value: val,
-      };
-    });
+    const aiCallsPerDay = days.map((date) => ({
+      date,
+      value: coaching.filter((s) => (s.created_at || '').slice(0, 10) === date).length,
+    }));
 
     const costPerDay = aiCallsPerDay.map((pt) => ({
       date: pt.date,
-      value: Math.round(pt.value * 0.038 * 100) / 100,
+      value: Math.round(pt.value * 0.04 * 100) / 100,
     }));
 
-    const activityPerDay = days.map((date, idx) => {
-      const uReal = users.filter((u) => (u.created_at || '').slice(0, 10) === date).length;
-      const cReal = cands.filter((c) => (c.date_envoi || c.created_at || '').slice(0, 10) === date).length;
-      const activeReal = users.filter((u) => (u.last_active_at || '').slice(0, 10) === date).length;
+    const activityPerDay = days.map((date) => {
+      const uCount = users.filter((u) => (u.created_at || '').slice(0, 10) === date).length;
+      const cCount = cands.filter((c) => (c.date_envoi || c.created_at || '').slice(0, 10) === date).length;
+      const pCount = posts.filter((p) => (p.created_at || '').slice(0, 10) === date).length;
+      const coachCount = coaching.filter((s) => (s.created_at || '').slice(0, 10) === date).length;
 
-      const dynamicTotal = (uReal * 3) + (cReal * 4) + (activeReal * 5);
-      const wave = Math.round(Math.sin((idx + 2) * 0.6) * 5 + 14);
       return {
         date,
-        value: Math.max(dynamicTotal, wave),
+        value: uCount + cCount + pCount + coachCount,
       };
     });
 
     return { activityPerDay, usersPerDay, candidaturesPerDay, aiCallsPerDay, costPerDay };
   }
 }
+
