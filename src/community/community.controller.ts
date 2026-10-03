@@ -15,6 +15,7 @@ import {
 } from '../auth/decorators/current-user.decorator';
 import { CommunityService } from './community.service';
 import { CreatePostDto } from './dto/create-post.dto';
+import { CreateCommentDto } from './dto/create-comment.dto';
 import { ReportPostDto } from './dto/report-post.dto';
 
 @Controller('community')
@@ -60,6 +61,26 @@ export class CommunityController {
     @Body() dto: ReportPostDto,
   ) {
     return this.communityService.reportPost(user.id, id, dto);
+  }
+
+  // ── Comments / Replies Endpoints ───────────────────────────────────────────
+
+  @Get('posts/:id/comments')
+  @UseGuards(SupabaseJwtGuard)
+  async getComments(@Param('id') id: string) {
+    const comments = await this.communityService.getComments(id);
+    return { comments };
+  }
+
+  @Post('posts/:id/comments')
+  @UseGuards(SupabaseJwtGuard)
+  async createComment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: CreateCommentDto,
+  ) {
+    const comment = await this.communityService.createComment(user.id, id, dto);
+    return { comment };
   }
 
   // ── Admin Dashboard Endpoints ───────────────────────────────────────────────
