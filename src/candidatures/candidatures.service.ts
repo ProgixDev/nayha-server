@@ -30,6 +30,61 @@ export class CandidaturesService {
     );
   }
 
+  async listAdmin() {
+    const { data: candidatures, error } = await this.supabase
+      .from('candidatures')
+      .select('*')
+      .order('date_envoi', { ascending: false });
+
+    if (error) throw new Error(error.message);
+
+    const { data: users } = await this.supabase
+      .from('user_profiles')
+      .select('id, name');
+
+    const userMap = new Map<string, string>();
+    if (users) {
+      for (const u of users) {
+        userMap.set(u.id, u.name);
+      }
+    }
+
+    return (candidatures || []).map((c) => ({
+      ...c,
+      user_name: userMap.get(c.user_id) || 'Utilisatrice',
+    }));
+  }
+
+  async getAdminStats() {
+    const { data: candidatures, error } = await this.supabase
+      .from('candidatures')
+      .select('statut');
+
+    if (error) throw new Error(error.message);
+
+    const all = candidatures || [];
+    const total = all.length;
+    const withResponse = all.filter(
+      (c) => c.statut !== 'envoyee' && c.statut !== 'a_relancer',
+    ).length;
+    const tauxReponse = total > 0 ? Math.round((withResponse / total) * 100) / 100 : 0;
+    const enCours = all.filter(
+      (c) => c.statut === 'envoyee' || c.statut === 'en_attente' || c.statut === 'a_relancer',
+    ).length;
+    const entretiensObtenus = all.filter(
+      (c) => c.statut === 'entretien' || c.statut === 'acceptee',
+    ).length;
+    const acceptees = all.filter((c) => c.statut === 'acceptee').length;
+
+    return {
+      total,
+      tauxReponse,
+      enCours,
+      entretiensObtenus,
+      acceptees,
+    };
+  }
+
   async list(userId: string) {
     const { data, error } = await this.supabase
       .from('candidatures')
