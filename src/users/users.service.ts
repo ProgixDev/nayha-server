@@ -480,13 +480,21 @@ export class UsersService {
       rgpd_accepted: rawProfile?.rgpd_accepted ?? false,
       diagnostic_vie_completed: rawProfile?.diagnostic_vie_completed ?? false,
       diagnostic_pro_completed: rawProfile?.diagnostic_pro_completed ?? false,
-      metier_selected: rawProfile?.metier_selected ?? false,
+      metier_selected:
+        !!rawProfile?.selected_metier_titre ||
+        !!rawProfile?.selected_metier_id ||
+        (rawProfile?.metier_selected ?? false),
       has_paid: rawProfile?.has_paid ?? false,
       selected_metier_titre: rawProfile?.selected_metier_titre ?? '',
       parcours_type: primaryParcours,
       parcours_types: parcoursTypes,
-      parcours_analyse_completed: rawProfile?.parcours_analyse_completed ?? false,
-      parcours_first_candidature_completed: rawProfile?.parcours_first_candidature_completed ?? false,
+      parcours_analyse_completed:
+        (rawProfile?.parcours_analyse_completed ?? false) ||
+        (rawProfile?.evaluation_finished ?? false) ||
+        (rawProfile?.retour_emploi_evaluation_completed ?? false),
+      parcours_first_candidature_completed:
+        candidaturesCount > 0 ||
+        (rawProfile?.parcours_first_candidature_completed ?? false),
       ateliers_emploi_watched: Array.isArray(rawProfile?.ateliers_emploi_watched)
         ? rawProfile.ateliers_emploi_watched
         : [],
