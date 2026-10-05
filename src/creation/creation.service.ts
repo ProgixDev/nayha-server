@@ -108,10 +108,26 @@ export class CreationService {
       if (!reply) throw new Error('OpenAI returned an empty creation reply');
       return { reply };
     } catch (cause) {
-      this.logger.error(
-        'Creation coach request failed',
-        cause instanceof Error ? cause.stack : undefined,
-      );
+      // OpenAI errors carry useful status/code fields, while the raw SDK
+      // error object can contain request metadata. Log only the diagnostic
+      // fields needed to distinguish credentials, quota, rate limits, and
+      // model/request failures; never log the API key or conversation.
+      const openAiError =
+        typeof cause === 'object' && cause !== null
+          ? (cause as {
+              status?: unknown;
+              code?: unknown;
+              type?: unknown;
+              message?: unknown;
+            })
+          : undefined;
+      const detail = [
+        `status=${String(openAiError?.status ?? 'unknown')}`,
+        `code=${String(openAiError?.code ?? 'unknown')}`,
+        `type=${String(openAiError?.type ?? 'unknown')}`,
+        `message=${cause instanceof Error ? cause.message : String(cause)}`,
+      ].join(' ');
+      this.logger.error(`Creation coach request failed: ${detail}`);
       throw new ServiceUnavailableException(
         'NAYHA ne peut pas répondre pour le moment. Réessaie dans un instant.',
       );
