@@ -3,9 +3,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
+import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 type JourneySection = Record<string, unknown>;
@@ -47,6 +50,7 @@ const marketDecisions = ['continueTest', 'adjustOffer', 'otherIdea', 'pause'];
 export class CreationService {
   private readonly logger = new Logger(CreationService.name);
   private readonly supabase: SupabaseClient;
+  private readonly openai: OpenAI;
 
   constructor(configService: ConfigService) {
     this.supabase = createClient(
@@ -54,6 +58,64 @@ export class CreationService {
       configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
       { auth: { persistSession: false } },
     );
+    this.openai = new OpenAI({
+      apiKey: configService.get<string>('OPENAI_API_KEY'),
+    });
+  }
+
+  async coach(userId: string, dto: CreationCoachMessageDto) {
+    const message = dto.message?.trim() ?? '';
+    const history = (dto.history ?? []).slice(-16);
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('creation_journey')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`Unable to load creation context: ${error.message}`);
+    }
+
+    const completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      {
+        role: 'system',
+        content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données et le contexte enregistré, ne les redemande pas. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
+      },
+      ...history.map((turn) =>
+        turn.role === 'assistant'
+          ? ({ role: 'assistant', content: turn.content } as const)
+          : ({ role: 'user', content: turn.content } as const),
+      ),
+      ...(!message && history.length === 0
+        ? [
+            {
+              role: 'user' as const,
+              content:
+                'La personne ouvre l’assistant. Accueille-la brièvement, présente ton aide pour son projet de création et pose une seule question ouverte.',
+            },
+          ]
+        : []),
+      ...(message ? [{ role: 'user' as const, content: message }] : []),
+    ];
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.5,
+        max_tokens: 180,
+        messages: completionMessages,
+      });
+      const reply = completion.choices[0]?.message?.content?.trim();
+      if (!reply) throw new Error('OpenAI returned an empty creation reply');
+      return { reply };
+    } catch (cause) {
+      this.logger.error(
+        'Creation coach request failed',
+        cause instanceof Error ? cause.stack : undefined,
+      );
+      throw new ServiceUnavailableException(
+        'NAYHA ne peut pas répondre pour le moment. Réessaie dans un instant.',
+      );
+    }
   }
 
   async getJourney(userId: string): Promise<CreationJourney> {
