@@ -13,4 +13,8 @@ export class UpdateCreationJourneyDto {
   @IsOptional()
   @IsObject()
   marche?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  offre?: Record<string, unknown>;
 }

@@ -16,6 +16,7 @@ export interface CreationJourney {
   situation: JourneySection | null;
   activite: JourneySection | null;
   marche: JourneySection | null;
+  offre: JourneySection | null;
   updatedAt?: string;
 }
 
@@ -45,6 +46,7 @@ const testMethods = [
   'autre',
 ];
 const marketDecisions = ['continueTest', 'adjustOffer', 'otherIdea', 'pause'];
+const variableCostModels = ['ratioOfRevenue', 'perUnit'];
 
 @Injectable()
 export class CreationService {
@@ -154,7 +156,7 @@ export class CreationService {
     userId: string,
     dto: UpdateCreationJourneyDto,
   ): Promise<CreationJourney> {
-    if (!dto.situation && !dto.activite && !dto.marche) {
+    if (!dto.situation && !dto.activite && !dto.marche && !dto.offre) {
       throw new BadRequestException('Aucune étape à enregistrer');
     }
 
@@ -181,6 +183,9 @@ export class CreationService {
         next.marche = current.marche
           ? { ...current.marche, isConfirmed: false }
           : null;
+        next.offre = current.offre
+          ? { ...current.offre, isConfirmed: false }
+          : null;
       }
     }
 
@@ -202,6 +207,9 @@ export class CreationService {
         next.marche = current.marche
           ? { ...current.marche, isConfirmed: false }
           : null;
+        next.offre = current.offre
+          ? { ...current.offre, isConfirmed: false }
+          : null;
       }
     }
 
@@ -212,6 +220,27 @@ export class CreationService {
         );
       }
       next.marche = this.validateMarche(dto.marche);
+      const revisedMarche = { ...dto.marche };
+      delete revisedMarche.isConfirmed;
+      const savedMarche = current.marche ? { ...current.marche } : null;
+      if (savedMarche) delete savedMarche.isConfirmed;
+      if (
+        current.marche?.isConfirmed === true &&
+        JSON.stringify(revisedMarche) !== JSON.stringify(savedMarche)
+      ) {
+        next.offre = current.offre
+          ? { ...current.offre, isConfirmed: false }
+          : null;
+      }
+    }
+
+    if (dto.offre) {
+      if (current.marche?.isConfirmed !== true && next.marche?.isConfirmed !== true) {
+        throw new BadRequestException(
+          "L'étape 3 doit être confirmée avant de valider l'offre et sa viabilité",
+        );
+      }
+      next.offre = this.validateOffre(dto.offre);
     }
 
     next.updatedAt = new Date().toISOString();
@@ -237,6 +266,7 @@ export class CreationService {
       situation: this.asObjectOrNull(journey.situation),
       activite: this.asObjectOrNull(journey.activite),
       marche: this.asObjectOrNull(journey.marche),
+      offre: this.asObjectOrNull(journey.offre),
       ...(typeof journey.updatedAt === 'string'
         ? { updatedAt: journey.updatedAt }
         : {}),
@@ -363,6 +393,133 @@ export class CreationService {
       throw new BadRequestException("Complétez votre plan de test avant de le confirmer");
     }
     return { ...input };
+  }
+
+  private validateOffre(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, [
+      'offerTitle',
+      'targetCustomer',
+      'coreProblem',
+      'keyBenefit',
+      'offerContent',
+      'offerFormat',
+      'salesChannel',
+      'termsAndConditions',
+      'proposedPrice',
+      'priceUnit',
+      'timePerDeliveryHours',
+      'pitchExpress',
+      'targetMonthlyNetIncome',
+      'fixedMonthlyCosts',
+      'isFixedCostsConfirmedZero',
+      'variableCostModel',
+      'variableCostValue',
+      'socialLevyRate',
+      'monthlyBillableDays',
+      'monthlyCapacityUnits',
+      'initialStartupInvestment',
+      'initialCashReserve',
+      'paymentDelayDays',
+      'scenarios',
+      'isConfirmed',
+    ]);
+
+    for (const key of [
+      'offerTitle',
+      'targetCustomer',
+      'coreProblem',
+      'keyBenefit',
+      'offerContent',
+      'offerFormat',
+      'salesChannel',
+      'termsAndConditions',
+      'priceUnit',
+      'pitchExpress',
+    ]) {
+      this.validateOptionalString(input[key], key);
+    }
+    for (const key of ['isFixedCostsConfirmedZero', 'isConfirmed']) {
+      if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+        throw new BadRequestException(`Valeur invalide pour ${key}`);
+      }
+    }
+    this.validateNumber(input.proposedPrice, 'proposedPrice', 0, 100_000_000);
+    this.validateNumber(input.timePerDeliveryHours, 'timePerDeliveryHours', 0, 168);
+    this.validateNumber(input.targetMonthlyNetIncome, 'targetMonthlyNetIncome', 0, 1_000_000);
+    this.validateNumber(input.fixedMonthlyCosts, 'fixedMonthlyCosts', 0, 100_000_000, true);
+    this.validateOptionalEnum(input.variableCostModel, 'variableCostModel', variableCostModels);
+    this.validateNumber(input.variableCostValue, 'variableCostValue', 0, 100_000_000);
+    if (
+      input.variableCostModel === 'ratioOfRevenue' &&
+      typeof input.variableCostValue === 'number' &&
+      input.variableCostValue > 1
+    ) {
+      throw new BadRequestException('Le taux de coûts variables doit être compris entre 0 et 1');
+    }
+    this.validateNumber(input.socialLevyRate, 'socialLevyRate', 0, 1);
+    this.validateNumber(input.monthlyBillableDays, 'monthlyBillableDays', 0, 31);
+    this.validateNumber(input.monthlyCapacityUnits, 'monthlyCapacityUnits', 0, 10_000);
+    this.validateNumber(input.initialStartupInvestment, 'initialStartupInvestment', 0, 100_000_000);
+    this.validateNumber(input.initialCashReserve, 'initialCashReserve', 0, 100_000_000);
+    this.validateNumber(input.paymentDelayDays, 'paymentDelayDays', 0, 3_650);
+    if (
+      input.monthlyCapacityUnits !== undefined &&
+      !Number.isInteger(input.monthlyCapacityUnits)
+    ) {
+      throw new BadRequestException('Valeur invalide pour monthlyCapacityUnits');
+    }
+    if (
+      input.paymentDelayDays !== undefined &&
+      !Number.isInteger(input.paymentDelayDays)
+    ) {
+      throw new BadRequestException('Valeur invalide pour paymentDelayDays');
+    }
+    this.validateEconomicScenarios(input.scenarios);
+    this.validateConfirmation(input.isConfirmed);
+    if (
+      input.isConfirmed === true &&
+      [input.offerTitle, input.targetCustomer, input.coreProblem, input.keyBenefit].some(
+        (value) => typeof value !== 'string' || !value.trim(),
+      )
+    ) {
+      throw new BadRequestException(
+        'Complétez le nom de votre offre, sa cible, le problème et le bénéfice avant de confirmer',
+      );
+    }
+    return { ...input };
+  }
+
+  private validateEconomicScenarios(value: unknown) {
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.length > 10) {
+      throw new BadRequestException('Valeur invalide pour scenarios');
+    }
+    for (const scenario of value) {
+      if (scenario === null || typeof scenario !== 'object' || Array.isArray(scenario)) {
+        throw new BadRequestException('Valeur invalide pour scenarios');
+      }
+      const entry = scenario as Record<string, unknown>;
+      this.rejectUnknownKeys(entry, [
+        'name',
+        'price',
+        'volumeMonthly',
+        'paymentDelayDays',
+      ]);
+      if (typeof entry.name !== 'string' || !entry.name.trim()) {
+        throw new BadRequestException('Valeur invalide pour scenarios.name');
+      }
+      this.validateNumber(entry.price, 'scenarios.price', 0, 100_000_000);
+      this.validateNumber(entry.volumeMonthly, 'scenarios.volumeMonthly', 0, 1_000_000);
+      this.validateNumber(entry.paymentDelayDays, 'scenarios.paymentDelayDays', 0, 3_650);
+      if (entry.price === undefined || entry.volumeMonthly === undefined) {
+        throw new BadRequestException('Scénario économique incomplet');
+      }
+      for (const key of ['volumeMonthly', 'paymentDelayDays']) {
+        if (entry[key] !== undefined && !Number.isInteger(entry[key])) {
+          throw new BadRequestException(`Valeur invalide pour scenarios.${key}`);
+        }
+      }
+    }
   }
 
   private rejectUnknownKeys(input: JourneySection, allowed: string[]) {
