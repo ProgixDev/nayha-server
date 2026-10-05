@@ -1,6 +1,7 @@
 import {
   IsArray,
   IsBoolean,
+  IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -65,4 +66,9 @@ export class SubmitDiagnosticProDto {
 
   @IsString()
   idealDayVision: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['yes', 'maybe', 'no'])
+  creation_interest?: string;
 }

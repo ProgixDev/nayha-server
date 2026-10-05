@@ -99,6 +99,7 @@ export class UsersService {
       parcours_first_candidature_completed?: boolean;
       evaluation_finished?: boolean;
       retour_emploi_evaluation_completed?: boolean;
+      creation_interest?: string;
       ateliers_emploi_watched?: string[];
       actions_semaine_count?: number;
       subscription_tier?: string;
@@ -185,6 +186,9 @@ export class UsersService {
       .update({
         diagnostic_pro_data: diagnosticData,
         diagnostic_pro_completed: true,
+        ...(diagnosticData.creation_interest
+          ? { creation_interest: diagnosticData.creation_interest }
+          : {}),
         // Recommendations must be regenerated from the latest diagnostic answers.
         plan_action_data: null,
       })
