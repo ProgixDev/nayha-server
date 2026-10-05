@@ -9,13 +9,13 @@ import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 export class CreationController {
   constructor(private readonly creationService: CreationService) {}
 
-  /** Restore progress for the first two creation-of-activity steps. */
+  /** Restore saved creation-of-activity journey progress. */
   @Get('journey')
   getJourney(@CurrentUser() user: AuthUser) {
     return this.creationService.getJourney(user.id);
   }
 
-  /** Save one step without overwriting the other. */
+  /** Save one step without overwriting the other steps. */
   @Patch('journey')
   updateJourney(
     @CurrentUser() user: AuthUser,

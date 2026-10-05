@@ -12,6 +12,7 @@ type JourneySection = Record<string, unknown>;
 export interface CreationJourney {
   situation: JourneySection | null;
   activite: JourneySection | null;
+  marche: JourneySection | null;
   updatedAt?: string;
 }
 
@@ -33,6 +34,14 @@ const activityFamilies = [
 ];
 const targetTypes = ['b2c', 'b2b', 'mixte'];
 const salesChannels = ['local', 'enLigne', 'mixte'];
+const testMethods = [
+  'entretiens',
+  'questionnaire',
+  'prototype',
+  'listeInteret',
+  'autre',
+];
+const marketDecisions = ['continueTest', 'adjustOffer', 'otherIdea', 'pause'];
 
 @Injectable()
 export class CreationService {
@@ -67,7 +76,7 @@ export class CreationService {
     userId: string,
     dto: UpdateCreationJourneyDto,
   ): Promise<CreationJourney> {
-    if (!dto.situation && !dto.activite) {
+    if (!dto.situation && !dto.activite && !dto.marche) {
       throw new BadRequestException('Aucune étape à enregistrer');
     }
 
@@ -91,6 +100,9 @@ export class CreationService {
         next.activite = current.activite
           ? { ...current.activite, isConfirmed: false }
           : null;
+        next.marche = current.marche
+          ? { ...current.marche, isConfirmed: false }
+          : null;
       }
     }
 
@@ -101,6 +113,27 @@ export class CreationService {
         );
       }
       next.activite = this.validateActivite(dto.activite);
+      const revisedActivite = { ...dto.activite };
+      delete revisedActivite.isConfirmed;
+      const savedActivite = current.activite ? { ...current.activite } : null;
+      if (savedActivite) delete savedActivite.isConfirmed;
+      if (
+        current.activite?.isConfirmed === true &&
+        JSON.stringify(revisedActivite) !== JSON.stringify(savedActivite)
+      ) {
+        next.marche = current.marche
+          ? { ...current.marche, isConfirmed: false }
+          : null;
+      }
+    }
+
+    if (dto.marche) {
+      if (current.activite?.isConfirmed !== true && next.activite?.isConfirmed !== true) {
+        throw new BadRequestException(
+          "L'étape 2 doit être confirmée avant de valider l'étude de marché",
+        );
+      }
+      next.marche = this.validateMarche(dto.marche);
     }
 
     next.updatedAt = new Date().toISOString();
@@ -125,6 +158,7 @@ export class CreationService {
     return {
       situation: this.asObjectOrNull(journey.situation),
       activite: this.asObjectOrNull(journey.activite),
+      marche: this.asObjectOrNull(journey.marche),
       ...(typeof journey.updatedAt === 'string'
         ? { updatedAt: journey.updatedAt }
         : {}),
@@ -208,6 +242,51 @@ export class CreationService {
     return { ...input };
   }
 
+  private validateMarche(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, [
+      'customerProblem',
+      'customerLocations',
+      'testMethod',
+      'targetTestCount',
+      'competitors',
+      'feedbacks',
+      'marketDecision',
+      'untestedAcknowledged',
+      'isConfirmed',
+    ]);
+    for (const key of ['customerProblem', 'customerLocations']) {
+      this.validateOptionalString(input[key], key);
+    }
+    this.validateOptionalEnum(input.testMethod, 'testMethod', testMethods);
+    this.validateOptionalEnum(input.marketDecision, 'marketDecision', marketDecisions);
+    if (input.targetTestCount !== undefined &&
+        (!Number.isInteger(input.targetTestCount) ||
+          (input.targetTestCount as number) < 1 ||
+          (input.targetTestCount as number) > 30)) {
+      throw new BadRequestException('Nombre de retours cible invalide');
+    }
+    for (const key of ['untestedAcknowledged', 'isConfirmed']) {
+      if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+        throw new BadRequestException(`Valeur invalide pour ${key}`);
+      }
+    }
+    this.validateObjectArray(input.competitors, 'competitors', [
+      'name', 'offer', 'observedPrice', 'source', 'zone', 'observationDate', 'url',
+    ]);
+    this.validateObjectArray(input.feedbacks, 'feedbacks', [
+      'date', 'anonymizedProfile', 'expressedNeed', 'objections',
+      'priceReaction', 'nextStep', 'isPromising',
+    ], ['isPromising']);
+    if (input.isConfirmed === true &&
+        (typeof input.customerProblem !== 'string' ||
+          !input.customerProblem.trim() ||
+          typeof input.testMethod !== 'string' ||
+          input.targetTestCount === undefined)) {
+      throw new BadRequestException("Complétez votre plan de test avant de le confirmer");
+    }
+    return { ...input };
+  }
+
   private rejectUnknownKeys(input: JourneySection, allowed: string[]) {
     const unknown = Object.keys(input).filter((key) => !allowed.includes(key));
     if (unknown.length) {
@@ -248,8 +327,37 @@ export class CreationService {
     }
   }
 
+  private validateObjectArray(
+    value: unknown,
+    field: string,
+    allowedKeys: string[],
+    booleanKeys: string[] = [],
+  ) {
+    if (value === undefined) return;
+    if (!Array.isArray(value)) {
+      throw new BadRequestException(`Valeur invalide pour ${field}`);
+    }
+    for (const item of value) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+        throw new BadRequestException(`Valeur invalide pour ${field}`);
+      }
+      const record = item as Record<string, unknown>;
+      this.rejectUnknownKeys(record, allowedKeys);
+      for (const [key, entry] of Object.entries(record)) {
+        if (booleanKeys.includes(key)) {
+          if (typeof entry !== 'boolean') {
+            throw new BadRequestException(`Valeur invalide pour ${field}.${key}`);
+          }
+        } else if (typeof entry !== 'string') {
+          throw new BadRequestException(`Valeur invalide pour ${field}.${key}`);
+        }
+      }
+    }
+  }
+
   private validateOptionalEnum(value: unknown, field: string, allowed: string[]) {
-    if (value !== undefined && (typeof value !== 'string' || !allowed.includes(value))) {
+    if (value !== undefined && value !== null &&
+        (typeof value !== 'string' || !allowed.includes(value))) {
       throw new BadRequestException(`Valeur invalide pour ${field}`);
     }
   }

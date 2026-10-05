@@ -9,4 +9,8 @@ export class UpdateCreationJourneyDto {
   @IsOptional()
   @IsObject()
   activite?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  marche?: Record<string, unknown>;
 }
