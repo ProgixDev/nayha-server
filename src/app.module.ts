@@ -13,6 +13,7 @@ import { BlogModule } from './blog/blog.module';
 import { AteliersModule } from './ateliers/ateliers.module';
 import { AdminSettingsModule } from './admin-settings/admin-settings.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { CreationModule } from './creation/creation.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -33,6 +34,7 @@ import { HealthController } from './health.controller';
     AteliersModule,
     AdminSettingsModule,
     DashboardModule,
+    CreationModule,
   ],
   controllers: [HealthController],
 })
