@@ -278,8 +278,13 @@ export class CommunityService {
       initiale = firstName.charAt(0).toUpperCase() || 'A';
     }
 
+    const commentId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+
     const newComment: CommunityCommentEntity = {
-      id: `comm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: commentId,
       post_id: postId,
       parent_id: dto.parent_id?.trim() || null,
       reply_to_name: dto.reply_to_name?.trim() || null,

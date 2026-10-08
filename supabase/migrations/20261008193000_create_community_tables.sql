@@ -1,53 +1,57 @@
--- 1. Create community_posts table if it doesn't exist
+-- 1. Ensure community_posts table exists and has all required columns
 CREATE TABLE IF NOT EXISTS community_posts (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  auteur TEXT NOT NULL,
-  initiale TEXT NOT NULL DEFAULT '?',
-  contenu TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'normal',
+  id          UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  auteur      TEXT        NOT NULL,
+  initiale    TEXT        NOT NULL DEFAULT '?',
+  contenu     TEXT        NOT NULL CHECK (char_length(contenu) <= 600),
+  type        TEXT        NOT NULL DEFAULT 'normal'
+                          CHECK (type IN ('normal','victoire','question','temoignage')),
   reactions_count INTEGER NOT NULL DEFAULT 0,
-  comments_count INTEGER NOT NULL DEFAULT 0,
-  is_moderated BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  comments_count  INTEGER NOT NULL DEFAULT 0,
+  is_moderated    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- In case community_posts already existed without comments_count or updated_at:
+ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS comments_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 
 -- 2. Create community_comments table with support for replies (parent_id, reply_to_name)
 CREATE TABLE IF NOT EXISTS community_comments (
-  id TEXT PRIMARY KEY,
-  post_id TEXT NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
-  parent_id TEXT REFERENCES community_comments(id) ON DELETE CASCADE,
+  id            UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  post_id       UUID        NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+  parent_id     UUID        REFERENCES community_comments(id) ON DELETE CASCADE,
   reply_to_name TEXT,
-  user_id TEXT NOT NULL,
-  auteur TEXT NOT NULL,
-  initiale TEXT NOT NULL DEFAULT '?',
-  contenu TEXT NOT NULL,
-  is_moderated BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  user_id       UUID        REFERENCES auth.users(id) ON DELETE CASCADE,
+  auteur        TEXT        NOT NULL,
+  initiale      TEXT        NOT NULL DEFAULT '?',
+  contenu       TEXT        NOT NULL CHECK (char_length(contenu) <= 600),
+  is_moderated  BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
--- If table already existed, ensure parent_id and reply_to_name columns exist
-ALTER TABLE community_comments ADD COLUMN IF NOT EXISTS parent_id TEXT;
+-- If community_comments already existed, ensure reply columns exist
+ALTER TABLE community_comments ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES community_comments(id) ON DELETE CASCADE;
 ALTER TABLE community_comments ADD COLUMN IF NOT EXISTS reply_to_name TEXT;
 
 -- 3. Create community_reactions table
 CREATE TABLE IF NOT EXISTS community_reactions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  post_id TEXT NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (post_id, user_id)
+  post_id     UUID        NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (post_id, user_id)
 );
 
 -- 4. Create community_reports table
 CREATE TABLE IF NOT EXISTS community_reports (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  post_id TEXT NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL,
-  reason TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id          UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
+  post_id     UUID        NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  reason      TEXT,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (post_id, user_id)
 );
 
@@ -56,8 +60,6 @@ CREATE INDEX IF NOT EXISTS idx_community_posts_created_at ON community_posts(cre
 CREATE INDEX IF NOT EXISTS idx_community_posts_is_moderated ON community_posts(is_moderated);
 CREATE INDEX IF NOT EXISTS idx_community_comments_post_id ON community_comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_community_comments_parent_id ON community_comments(parent_id);
-CREATE INDEX IF NOT EXISTS idx_community_reactions_post_id ON community_reactions(post_id);
-CREATE INDEX IF NOT EXISTS idx_community_reports_post_id ON community_reports(post_id);
 
 -- 6. Row Level Security (RLS)
 ALTER TABLE community_posts ENABLE ROW LEVEL SECURITY;
