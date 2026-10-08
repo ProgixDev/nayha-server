@@ -73,11 +73,32 @@ export class CommunityService {
       }
     });
 
+    const userIds = Array.from(
+      new Set(
+        (postsResult.data ?? [])
+          .map((p) => p.user_id)
+          .filter(Boolean),
+      ),
+    );
+    const { data: userProfiles } =
+      userIds.length > 0
+        ? await this.supabase
+            .from('user_profiles')
+            .select('id, avatar_url')
+            .in('id', userIds)
+        : { data: [] };
+
+    const avatarsMap = new Map<string, string>();
+    (userProfiles ?? []).forEach((u) => {
+      if (u.avatar_url) avatarsMap.set(u.id, u.avatar_url);
+    });
+
     return (postsResult.data ?? []).map((post) => ({
       id: post.id,
       user_id: post.user_id,
       auteur: post.auteur,
       initiale: post.initiale,
+      avatar_url: avatarsMap.get(post.user_id) ?? null,
       contenu: post.contenu,
       type: post.type,
       reactions_count: post.reactions_count ?? 0,
@@ -247,7 +268,28 @@ export class CommunityService {
         const map = new Map<string, any>();
         data.forEach((c) => map.set(c.id, c));
         mem.forEach((c) => map.set(c.id, c));
-        return Array.from(map.values());
+        const allComments = Array.from(map.values());
+
+        const userIds = Array.from(
+          new Set(allComments.map((c) => c.user_id).filter(Boolean)),
+        );
+        const { data: userProfiles } =
+          userIds.length > 0
+            ? await this.supabase
+                .from('user_profiles')
+                .select('id, avatar_url')
+                .in('id', userIds)
+            : { data: [] };
+
+        const avatarsMap = new Map<string, string>();
+        (userProfiles ?? []).forEach((u) => {
+          if (u.avatar_url) avatarsMap.set(u.id, u.avatar_url);
+        });
+
+        return allComments.map((c) => ({
+          ...c,
+          avatar_url: avatarsMap.get(c.user_id) ?? null,
+        }));
       }
     } catch (_) {
       // fallback
