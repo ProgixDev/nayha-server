@@ -15,4 +15,13 @@ export class CreateCommentDto {
   @IsString()
   @MaxLength(2)
   initiale?: string;
+
+  @IsOptional()
+  @IsString()
+  parent_id?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  reply_to_name?: string;
 }

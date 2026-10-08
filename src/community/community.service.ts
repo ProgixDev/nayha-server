@@ -8,6 +8,8 @@ import { ReportPostDto } from './dto/report-post.dto';
 export interface CommunityCommentEntity {
   id: string;
   post_id: string;
+  parent_id?: string | null;
+  reply_to_name?: string | null;
   user_id: string;
   auteur: string;
   initiale: string;
@@ -279,6 +281,8 @@ export class CommunityService {
     const newComment: CommunityCommentEntity = {
       id: `comm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       post_id: postId,
+      parent_id: dto.parent_id?.trim() || null,
+      reply_to_name: dto.reply_to_name?.trim() || null,
       user_id: userId,
       auteur: firstName,
       initiale,
@@ -293,6 +297,8 @@ export class CommunityService {
         .insert({
           id: newComment.id,
           post_id: postId,
+          parent_id: newComment.parent_id,
+          reply_to_name: newComment.reply_to_name,
           user_id: userId,
           auteur: firstName,
           initiale,
