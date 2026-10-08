@@ -12,6 +12,7 @@ import { CoachingModule } from './coaching/coaching.module';
 import { BlogModule } from './blog/blog.module';
 import { AteliersModule } from './ateliers/ateliers.module';
 import { AdminSettingsModule } from './admin-settings/admin-settings.module';
+import { AppLinksModule } from './app-links/app-links.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { CreationModule } from './creation/creation.module';
 import { HealthController } from './health.controller';
@@ -33,6 +34,7 @@ import { HealthController } from './health.controller';
     BlogModule,
     AteliersModule,
     AdminSettingsModule,
+    AppLinksModule,
     DashboardModule,
     CreationModule,
   ],
