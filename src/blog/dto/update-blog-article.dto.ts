@@ -12,4 +12,8 @@ export class UpdateBlogArticleDto {
   coachTrigger?: string;
   coachMessage?: string;
   isPublished?: boolean;
+  authorName?: string;
+  authorRole?: string;
+  authorAvatarUrl?: string;
+  coverImageUrl?: string;
 }

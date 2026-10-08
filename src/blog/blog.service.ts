@@ -18,8 +18,20 @@ export interface BlogArticleEntity {
   coachMessage: string;
   isPublished: boolean;
   viewsCount: number;
+  authorName?: string;
+  authorRole?: string;
+  authorAvatarUrl?: string;
+  coverImageUrl?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BlogStatsEntity {
+  totalArticles: number;
+  publishedArticles: number;
+  draftArticles: number;
+  totalViews: number;
+  mostReadCategory: string;
 }
 
 const DEFAULT_ARTICLES: BlogArticleEntity[] = [
@@ -27,36 +39,38 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'premiers-pas-confiance',
     title: 'Les premiers pas pour avancer avec confiance',
     subtitle:
-        'Comment dépasser la paralysie du doute et réenclencher une dynamique positive au quotidien.',
+      'Comment dépasser la paralysie du doute et réenclencher une dynamique positive au quotidien.',
     category: 'Confiance',
     readTimeMinutes: 3,
     keyTakeaway:
-        'La confiance ne précède pas l’action, elle en est la conséquence directe. Commencer par un micro-geste réalisable débloque l’élan.',
+      'La confiance ne précède pas l’action, elle en est la conséquence directe. Commencer par un micro-geste réalisable débloque l’élan.',
     exerciseTitle: 'Ton micro-geste du jour (2 min)',
     exercisePrompt:
-        'Identifie une seule chose que tu repousses par manque d’assurance. Rends-la si petite qu’il est impossible d’échouer, et fais-la maintenant.',
+      'Identifie une seule chose que tu repousses par manque d’assurance. Rends-la si petite qu’il est impossible d’échouer, et fais-la maintenant.',
     coachTrigger: 'Reprendre confiance',
     coachMessage:
-        'J’ai lu l’article sur les premiers pas pour avancer avec confiance. Comment puis-je définir mon tout premier micro-geste cette semaine ?',
+      'J’ai lu l’article sur les premiers pas pour avancer avec confiance. Comment puis-je définir mon tout premier micro-geste cette semaine ?',
     sections: [
       {
         heading: 'Le mythe du courage préalable',
         content:
-            'On attend souvent de "se sentir prêt" ou "d’avoir confiance" avant de postuler, de contacter une personne du réseau ou de poser les bases d’un projet. En réalité, le cerveau attend des preuves tangibles de succès avant de libérer le sentiment de sécurité intérieure.',
+          'On attend souvent de "se sentir prêt" ou "d’avoir confiance" avant de postuler, de contacter une personne du réseau ou de poser les bases d’un projet. En réalité, le cerveau attend des preuves tangibles de succès avant de libérer le sentiment de sécurité intérieure.',
       },
       {
         heading: 'La règle de la micro-marche',
         content:
-            'Plutôt que de viser un objectif monumental, découpe-le en une tâche de 5 minutes. Ouvrir un document et écrire 3 compétences suffit à relancer l’énergie.',
+          'Plutôt que de viser un objectif monumental, découpe-le en une tâche de 5 minutes. Ouvrir un document et écrire 3 compétences suffit à relancer l’énergie.',
       },
       {
         heading: 'Accepter l’inconfort passager',
         content:
-            'L’hésitation n’est pas un signe d’incompétence. C’est simplement le signe que tu t’aventures hors de ta zone de confort connue. Sois bienveillant avec ce ressenti et avance à ton rythme.',
+          'L’hésitation n’est pas un signe d’incompétence. C’est simplement le signe que tu t’aventures hors de ta zone de confort connue. Sois bienveillant avec ce ressenti et avance à ton rythme.',
       },
     ],
     isPublished: true,
     viewsCount: 240,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Experte Coaching & Confiance',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -64,36 +78,38 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'transformer-experience-atout',
     title: 'Transformer son expérience en véritable atout',
     subtitle:
-        'Mettre en valeur son parcours singulier, ses compétences transversales et ses apprentissages.',
+      'Mettre en valeur son parcours singulier, ses compétences transversales et ses apprentissages.',
     category: 'Retour à l’emploi',
     readTimeMinutes: 4,
     keyTakeaway:
-        'Chaque étape de ton parcours t’a appris des compétences précieuses. Ce n’est pas la linéarité qui fait la valeur, c’est le fil conducteur que tu racontes.',
+      'Chaque étape de ton parcours t’a appris des compétences précieuses. Ce n’est pas la linéarité qui fait la valeur, c’est le fil conducteur que tu racontes.',
     exerciseTitle: 'L’exercice des compétences invisibles',
     exercisePrompt:
-        'Liste 3 compétences relationnelles ou d’organisation que tu as développées en dehors d’un cadre professionnel classique.',
+      'Liste 3 compétences relationnelles ou d’organisation que tu as développées en dehors d’un cadre professionnel classique.',
     coachTrigger: 'Valoriser mon parcours',
     coachMessage:
-        'J’aimerais apprendre à mieux raconter mon parcours et valoriser mes compétences transversales.',
+      'J’aimerais apprendre à mieux raconter mon parcours et valoriser mes compétences transversales.',
     sections: [
       {
         heading: 'Sortir de la comparaison',
         content:
-            'Il est tentant de comparer son CV à des parcours ultra-linéaires. Pourtant, les recruteurs recherchent de plus en plus des profils adaptables, résilients et capables d’apporter une perspective différente.',
+          'Il est tentant de comparer son CV à des parcours ultra-linéaires. Pourtant, les recruteurs recherchent de plus en plus des profils adaptables, résilients et capables d’apporter une perspective différente.',
       },
       {
         heading: 'Identifier le fil conducteur',
         content:
-            'Quelle est la valeur ou le plaisir qui a toujours guidé tes choix ? L’écoute, la rigueur, le sens du service, la créativité ? C’est ce fil rouge qui donne toute sa cohérence à ton histoire.',
+          'Quelle est la valeur ou le plaisir qui a toujours guidé tes choix ? L’écoute, la rigueur, le sens du service, la créativité ? C’est ce fil rouge qui donne toute sa cohérence à ton histoire.',
       },
       {
         heading: 'Exprimer ses réussites avec simplicité',
         content:
-            'Parler de ses réussites ne signifie pas se vanter. Il s’agit simplement de décrire une situation, ton action concrète et le résultat obtenu pour l’équipe ou le projet.',
+          'Parler de ses réussites ne signifie pas se vanter. Il s’agit simplement de décrire une situation, ton action concrète et le résultat obtenu pour l’équipe ou le projet.',
       },
     ],
     isPublished: true,
     viewsCount: 185,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Experte Emploi & Carrières',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -101,31 +117,33 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'trouver-rythme-durable',
     title: 'Trouver un rythme durable pour son projet',
     subtitle:
-        'Éviter l’épuisement et bâtir une routine bienveillante et régulière vers ses objectifs.',
+      'Éviter l’épuisement et bâtir une routine bienveillante et régulière vers ses objectifs.',
     category: 'Confiance',
     readTimeMinutes: 3,
     keyTakeaway:
-        'La constance douce bat toujours l’intensité brève. Mieux vaut 20 minutes chaque matin qu’une journée entière suivie de deux semaines de découragement.',
+      'La constance douce bat toujours l’intensité brève. Mieux vaut 20 minutes chaque matin qu’une journée entière suivie de deux semaines de découragement.',
     exerciseTitle: 'Ta plage de respiration',
     exercisePrompt:
-        'Définis une heure fixe dans ta semaine où tu fermes les écrans et où tu t’accordes une pause totale sans culpabilité.',
+      'Définis une heure fixe dans ta semaine où tu fermes les écrans et où tu t’accordes une pause totale sans culpabilité.',
     coachTrigger: 'Rythme et sérénité',
     coachMessage:
-        'Comment organiser mes journées pour avancer sur mon projet professionnel sans me sentir débordé(e) ?',
+      'Comment organiser mes journées pour avancer sur mon projet professionnel sans me sentir débordé(e) ?',
     sections: [
       {
         heading: 'La fatigue invisible de la transition',
         content:
-            'Changer de métier ou chercher un emploi demande une énergie mentale colossale. La remise en question, les doutes et l’incertitude consomment énormément de ressources.',
+          'Changer de métier ou chercher un emploi demande une énergie mentale colossale. La remise en question, les doutes et l’incertitude consomment énormément de ressources.',
       },
       {
         heading: 'Protéger ses temps de récupération',
         content:
-            'Une pause n’est pas du temps perdu : c’est le carburant indispensable pour garder de la lucidité, de la créativité et de la motivation sur la durée.',
+          'Une pause n’est pas du temps perdu : c’est le carburant indispensable pour garder de la lucidité, de la créativité et de la motivation sur la durée.',
       },
     ],
     isPublished: true,
     viewsCount: 142,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Coach Bien-être & Organisation',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -133,31 +151,33 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'reconversion-identifier-voie',
     title: 'Clarifier sa voie lors d’une reconversion',
     subtitle:
-        'Les 3 questions clés pour aligner ses envies profondes avec les réalités du marché.',
+      'Les 3 questions clés pour aligner ses envies profondes avec les réalités du marché.',
     category: 'Reconversion',
     readTimeMinutes: 5,
     keyTakeaway:
-        'Une reconversion réussie se situe au croisement de ce que tu aimes faire, de tes talents naturels et des opportunités réelles sur le terrain.',
+      'Une reconversion réussie se situe au croisement de ce que tu aimes faire, de tes talents naturels et des opportunités réelles sur le terrain.',
     exerciseTitle: 'Le filtre des 3 cercles',
     exercisePrompt:
-        'Note 2 activités professionnelles qui te donnent de l’énergie, et 2 tâches que tu souhaites absolument bannir de ton futur quotidien.',
+      'Note 2 activités professionnelles qui te donnent de l’énergie, et 2 tâches que tu souhaites absolument bannir de ton futur quotidien.',
     coachTrigger: 'Clarifier ma reconversion',
     coachMessage:
-        'Je suis en pleine réflexion de reconversion et j’aimerais poser les critères essentiels de mon futur métier.',
+      'Je suis en pleine réflexion de reconversion et j’aimerais poser les critères essentiels de mon futur métier.',
     sections: [
       {
         heading: 'Partir de ses sources d’énergie',
         content:
-            'Au lieu de chercher directement un intitulé de poste, commence par identifier les conditions dans lesquelles tu t’épanouis : travailler en équipe ou en autonomie, en intérieur ou sur le terrain.',
+          'Au lieu de chercher directement un intitulé de poste, commence par identifier les conditions dans lesquelles tu t’épanouis : travailler en équipe ou en autonomie, en intérieur ou sur le terrain.',
       },
       {
         heading: 'Valider sur le terrain par l’immersion',
         content:
-            'Rien ne remplace le contact direct avec des professionnels en poste. Passer une journée en observation (PMSMP) ou faire des interviews métier dissipe les fantasmes.',
+          'Rien ne remplace le contact direct avec des professionnels en poste. Passer une journée en observation (PMSMP) ou faire des interviews métier dissipe les fantasmes.',
       },
     ],
     isPublished: true,
     viewsCount: 310,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Conseillère Reconversion',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -165,31 +185,33 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'premiers-clients-activite',
     title: 'Décrocher ses premiers clients sans forcer',
     subtitle:
-        'La méthode bienveillante pour activer son réseau proche et tester son offre avec authenticité.',
+      'La méthode bienveillante pour activer son réseau proche et tester son offre avec authenticité.',
     category: 'Création d’activité',
     readTimeMinutes: 4,
     keyTakeaway:
-        'Vendre un service, c’est avant tout résoudre un problème pour quelqu’un. Quand tu te concentres sur l’aide à apporter, la peur de vendre disparaît.',
+      'Vendre un service, c’est avant tout résoudre un problème pour quelqu’un. Quand tu te concentres sur l’aide à apporter, la peur de vendre disparaît.',
     exerciseTitle: 'Le message de découverte',
     exercisePrompt:
-        'Pense à une personne de ton entourage qui pourrait bénéficier de tes compétences. Propose-lui un échange de 15 min pour lui demander son avis sincère.',
+      'Pense à une personne de ton entourage qui pourrait bénéficier de tes compétences. Propose-lui un échange de 15 min pour lui demander son avis sincère.',
     coachTrigger: 'Lancer mon activité',
     coachMessage:
-        'Je prépare le lancement de mon activité et j’aimerais définir ma proposition de valeur pour mes premiers clients.',
+      'Je prépare le lancement de mon activité et j’aimerais définir ma proposition de valeur pour mes premiers clients.',
     sections: [
       {
         heading: 'Clarifier la transformation',
         content:
-            'Les clients n’achètent pas des heures : ils recherchent un soulagement, un gain de temps ou une sérénité retrouvée.',
+          'Les clients n’achètent pas des heures : ils recherchent un soulagement, un gain de temps ou une sérénité retrouvée.',
       },
       {
         heading: 'La puissance des retours d’expérience',
         content:
-            'Tes premiers accompagnements sont précieux pour collecter des témoignages concrets. Ils constituent la base de ta crédibilité future.',
+          'Tes premiers accompagnements sont précieux pour collecter des témoignages concrets. Ils constituent la base de ta crédibilité future.',
       },
     ],
     isPublished: true,
     viewsCount: 95,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Experte Entrepreneuriat',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -197,31 +219,33 @@ const DEFAULT_ARTICLES: BlogArticleEntity[] = [
     id: 'preparer-entretien-sereinement',
     title: 'Aborder un entretien avec authenticité et clarté',
     subtitle:
-        'Comment transformer un échange d’embauche en une véritable conversation d’égal à égal.',
+      'Comment transformer un échange d’embauche en une véritable conversation d’égal à égal.',
     category: 'Retour à l’emploi',
     readTimeMinutes: 4,
     keyTakeaway:
-        'Un entretien n’est pas un interrogatoire : c’est une rencontre pour voir si votre collaboration a du sens pour les deux parties.',
+      'Un entretien n’est pas un interrogatoire : c’est une rencontre pour voir si votre collaboration a du sens pour les deux parties.',
     exerciseTitle: 'La question miroir',
     exercisePrompt:
-        'Rédige 2 questions précises que tu souhaites poser au recruteur pour savoir si cet environnement te correspond vraiment.',
+      'Rédige 2 questions précises que tu souhaites poser au recruteur pour savoir si cet environnement te correspond vraiment.',
     coachTrigger: 'Préparer un entretien',
     coachMessage:
-        'J’ai un entretien à préparer et j’aimerais m’entraîner à répondre aux questions avec assurance et authenticité.',
+      'J’ai un entretien à préparer et j’aimerais m’entraîner à répondre aux questions avec assurance et authenticité.',
     sections: [
       {
         heading: 'Changer de posture',
         content:
-            'Le recruteur a un problème à résoudre et cherche un allié. En adoptant une posture d’écoute et de curiosité sincère, tu évites le stress du candidat jugé.',
+          'Le recruteur a un problème à résoudre et cherche un allié. En adoptant une posture d’écoute et de curiosité sincère, tu évites le stress du candidat jugé.',
       },
       {
         heading: 'La structure STAR pour tes exemples',
         content:
-            'Pour chaque compétence revendiquée, prépare un exemple concret : Situation, Tâche, Action et Résultat.',
+          'Pour chaque compétence revendiquée, prépare un exemple concret : Situation, Tâche, Action et Résultat.',
       },
     ],
     isPublished: true,
     viewsCount: 215,
+    authorName: 'Équipe NAYHA',
+    authorRole: 'Recruteuse & Coach RH',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -251,7 +275,8 @@ export class BlogService {
     try {
       const { data } = await this.supabase
         .from('blog_articles')
-        .select('category');
+        .select('category')
+        .eq('is_published', true);
       if (data && data.length > 0) {
         const set = new Set(base);
         for (const item of data) {
@@ -269,7 +294,7 @@ export class BlogService {
     return Array.from(set);
   }
 
-  async list(category?: string, search?: string) {
+  async list(category?: string, search?: string): Promise<BlogArticleEntity[]> {
     try {
       let query = this.supabase
         .from('blog_articles')
@@ -317,7 +342,7 @@ export class BlogService {
     return items;
   }
 
-  async get(id: string) {
+  async get(id: string): Promise<BlogArticleEntity> {
     try {
       const { data, error } = await this.supabase
         .from('blog_articles')
@@ -336,9 +361,45 @@ export class BlogService {
     return article;
   }
 
-  // ── Admin operations ────────────────────────────────────────────────────────
+  async trackView(id: string, userId?: string, sessionId?: string): Promise<{ success: boolean; viewsCount: number }> {
+    try {
+      // 1. Insert record in blog_views
+      await this.supabase.from('blog_views').insert({
+        article_id: id,
+        user_id: userId || null,
+        session_id: sessionId || null,
+      });
 
-  async listAdmin() {
+      // 2. Fetch current views count and increment
+      const { data } = await this.supabase
+        .from('blog_articles')
+        .select('views_count')
+        .eq('id', id)
+        .single();
+
+      const newCount = (data?.views_count ?? 0) + 1;
+      await this.supabase
+        .from('blog_articles')
+        .update({ views_count: newCount })
+        .eq('id', id);
+
+      const mem = this.inMemoryArticles.find((a) => a.id === id);
+      if (mem) mem.viewsCount = newCount;
+
+      return { success: true, viewsCount: newCount };
+    } catch (_) {
+      const mem = this.inMemoryArticles.find((a) => a.id === id);
+      if (mem) {
+        mem.viewsCount += 1;
+        return { success: true, viewsCount: mem.viewsCount };
+      }
+      return { success: true, viewsCount: 1 };
+    }
+  }
+
+  // ── Admin Operations ────────────────────────────────────────────────────────
+
+  async listAdmin(): Promise<BlogArticleEntity[]> {
     try {
       const { data, error } = await this.supabase
         .from('blog_articles')
@@ -353,7 +414,36 @@ export class BlogService {
     return [...this.inMemoryArticles];
   }
 
-  async create(dto: CreateBlogArticleDto) {
+  async getStats(): Promise<BlogStatsEntity> {
+    const articles = await this.listAdmin();
+    const published = articles.filter((a) => a.isPublished).length;
+    const draft = articles.length - published;
+    const totalViews = articles.reduce((acc, a) => acc + (a.viewsCount || 0), 0);
+
+    const categoryCounts: Record<string, number> = {};
+    articles.forEach((a) => {
+      categoryCounts[a.category] = (categoryCounts[a.category] || 0) + (a.viewsCount || 0);
+    });
+
+    let mostReadCategory = 'Confiance';
+    let maxViews = -1;
+    Object.entries(categoryCounts).forEach(([cat, count]) => {
+      if (count > maxViews) {
+        maxViews = count;
+        mostReadCategory = cat;
+      }
+    });
+
+    return {
+      totalArticles: articles.length,
+      publishedArticles: published,
+      draftArticles: draft,
+      totalViews,
+      mostReadCategory,
+    };
+  }
+
+  async create(dto: CreateBlogArticleDto): Promise<BlogArticleEntity> {
     const id =
       dto.title
         .toLowerCase()
@@ -375,26 +465,44 @@ export class BlogService {
       coachMessage: dto.coachMessage.trim(),
       isPublished: dto.isPublished ?? true,
       viewsCount: 0,
+      authorName: dto.authorName?.trim() || 'Équipe NAYHA',
+      authorRole: dto.authorRole?.trim() || 'Experte NAYHA',
+      authorAvatarUrl: dto.authorAvatarUrl?.trim() || undefined,
+      coverImageUrl: dto.coverImageUrl?.trim() || undefined,
       createdAt: now,
       updatedAt: now,
     };
 
     try {
-      await this.supabase.from('blog_articles').insert({
-        id: entity.id,
-        title: entity.title,
-        subtitle: entity.subtitle,
-        category: entity.category,
-        read_time_minutes: entity.readTimeMinutes,
-        key_takeaway: entity.keyTakeaway,
-        exercise_title: entity.exerciseTitle,
-        exercise_prompt: entity.exercisePrompt,
-        sections: entity.sections,
-        coach_trigger: entity.coachTrigger,
-        coach_message: entity.coachMessage,
-        is_published: entity.isPublished,
-        views_count: 0,
-      });
+      const { data, error } = await this.supabase
+        .from('blog_articles')
+        .insert({
+          id: entity.id,
+          title: entity.title,
+          subtitle: entity.subtitle,
+          category: entity.category,
+          read_time_minutes: entity.readTimeMinutes,
+          key_takeaway: entity.keyTakeaway,
+          exercise_title: entity.exerciseTitle,
+          exercise_prompt: entity.exercisePrompt,
+          sections: entity.sections,
+          coach_trigger: entity.coachTrigger,
+          coach_message: entity.coachMessage,
+          is_published: entity.isPublished,
+          views_count: 0,
+          author_name: entity.authorName,
+          author_role: entity.authorRole,
+          author_avatar_url: entity.authorAvatarUrl,
+          cover_image_url: entity.coverImageUrl,
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        const created = this.mapFromDb(data);
+        this.inMemoryArticles.unshift(created);
+        return created;
+      }
     } catch (_) {
       // in-memory fallback
     }
@@ -403,26 +511,41 @@ export class BlogService {
     return entity;
   }
 
-  async update(id: string, dto: UpdateBlogArticleDto) {
+  async update(id: string, dto: UpdateBlogArticleDto): Promise<BlogArticleEntity> {
     const now = new Date().toISOString();
     try {
-      await this.supabase
+      const updatePayload: Record<string, any> = {
+        ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
+        ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle.trim() } : {}),
+        ...(dto.category !== undefined ? { category: dto.category.trim() } : {}),
+        ...(dto.readTimeMinutes !== undefined ? { read_time_minutes: dto.readTimeMinutes } : {}),
+        ...(dto.keyTakeaway !== undefined ? { key_takeaway: dto.keyTakeaway.trim() } : {}),
+        ...(dto.exerciseTitle !== undefined ? { exercise_title: dto.exerciseTitle?.trim() || null } : {}),
+        ...(dto.exercisePrompt !== undefined ? { exercise_prompt: dto.exercisePrompt?.trim() || null } : {}),
+        ...(dto.sections !== undefined ? { sections: dto.sections } : {}),
+        ...(dto.coachTrigger !== undefined ? { coach_trigger: dto.coachTrigger.trim() } : {}),
+        ...(dto.coachMessage !== undefined ? { coach_message: dto.coachMessage.trim() } : {}),
+        ...(dto.isPublished !== undefined ? { is_published: dto.isPublished } : {}),
+        ...(dto.authorName !== undefined ? { author_name: dto.authorName?.trim() || null } : {}),
+        ...(dto.authorRole !== undefined ? { author_role: dto.authorRole?.trim() || null } : {}),
+        ...(dto.authorAvatarUrl !== undefined ? { author_avatar_url: dto.authorAvatarUrl?.trim() || null } : {}),
+        ...(dto.coverImageUrl !== undefined ? { cover_image_url: dto.coverImageUrl?.trim() || null } : {}),
+        updated_at: now,
+      };
+
+      const { data, error } = await this.supabase
         .from('blog_articles')
-        .update({
-          ...(dto.title ? { title: dto.title.trim() } : {}),
-          ...(dto.subtitle ? { subtitle: dto.subtitle.trim() } : {}),
-          ...(dto.category ? { category: dto.category.trim() } : {}),
-          ...(dto.readTimeMinutes ? { read_time_minutes: dto.readTimeMinutes } : {}),
-          ...(dto.keyTakeaway ? { key_takeaway: dto.keyTakeaway.trim() } : {}),
-          ...(dto.exerciseTitle !== undefined ? { exercise_title: dto.exerciseTitle?.trim() || null } : {}),
-          ...(dto.exercisePrompt !== undefined ? { exercise_prompt: dto.exercisePrompt?.trim() || null } : {}),
-          ...(dto.sections ? { sections: dto.sections } : {}),
-          ...(dto.coachTrigger ? { coach_trigger: dto.coachTrigger.trim() } : {}),
-          ...(dto.coachMessage ? { coach_message: dto.coachMessage.trim() } : {}),
-          ...(dto.isPublished !== undefined ? { is_published: dto.isPublished } : {}),
-          updated_at: now,
-        })
-        .eq('id', id);
+        .update(updatePayload)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (!error && data) {
+        const updated = this.mapFromDb(data);
+        const idx = this.inMemoryArticles.findIndex((a) => a.id === id);
+        if (idx !== -1) this.inMemoryArticles[idx] = updated;
+        return updated;
+      }
     } catch (_) {
       // in memory
     }
@@ -431,17 +554,21 @@ export class BlogService {
     if (index !== -1) {
       this.inMemoryArticles[index] = {
         ...this.inMemoryArticles[index],
-        ...(dto.title ? { title: dto.title.trim() } : {}),
-        ...(dto.subtitle ? { subtitle: dto.subtitle.trim() } : {}),
-        ...(dto.category ? { category: dto.category.trim() } : {}),
-        ...(dto.readTimeMinutes ? { readTimeMinutes: dto.readTimeMinutes } : {}),
-        ...(dto.keyTakeaway ? { keyTakeaway: dto.keyTakeaway.trim() } : {}),
+        ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
+        ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle.trim() } : {}),
+        ...(dto.category !== undefined ? { category: dto.category.trim() } : {}),
+        ...(dto.readTimeMinutes !== undefined ? { readTimeMinutes: dto.readTimeMinutes } : {}),
+        ...(dto.keyTakeaway !== undefined ? { keyTakeaway: dto.keyTakeaway.trim() } : {}),
         ...(dto.exerciseTitle !== undefined ? { exerciseTitle: dto.exerciseTitle?.trim() || undefined } : {}),
         ...(dto.exercisePrompt !== undefined ? { exercisePrompt: dto.exercisePrompt?.trim() || undefined } : {}),
-        ...(dto.sections ? { sections: dto.sections } : {}),
-        ...(dto.coachTrigger ? { coachTrigger: dto.coachTrigger.trim() } : {}),
-        ...(dto.coachMessage ? { coachMessage: dto.coachMessage.trim() } : {}),
+        ...(dto.sections !== undefined ? { sections: dto.sections } : {}),
+        ...(dto.coachTrigger !== undefined ? { coachTrigger: dto.coachTrigger.trim() } : {}),
+        ...(dto.coachMessage !== undefined ? { coachMessage: dto.coachMessage.trim() } : {}),
         ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
+        ...(dto.authorName !== undefined ? { authorName: dto.authorName?.trim() } : {}),
+        ...(dto.authorRole !== undefined ? { authorRole: dto.authorRole?.trim() } : {}),
+        ...(dto.authorAvatarUrl !== undefined ? { authorAvatarUrl: dto.authorAvatarUrl?.trim() } : {}),
+        ...(dto.coverImageUrl !== undefined ? { coverImageUrl: dto.coverImageUrl?.trim() } : {}),
         updatedAt: now,
       };
       return this.inMemoryArticles[index];
@@ -449,7 +576,7 @@ export class BlogService {
     return this.get(id);
   }
 
-  async remove(id: string) {
+  async remove(id: string): Promise<{ success: boolean }> {
     try {
       await this.supabase.from('blog_articles').delete().eq('id', id);
     } catch (_) {
@@ -463,8 +590,8 @@ export class BlogService {
     return {
       id: raw.id,
       title: raw.title,
-      subtitle: raw.subtitle,
-      category: raw.category,
+      subtitle: raw.subtitle ?? '',
+      category: raw.category ?? 'Général',
       readTimeMinutes: raw.read_time_minutes ?? 3,
       keyTakeaway: raw.key_takeaway ?? '',
       exerciseTitle: raw.exercise_title ?? undefined,
@@ -474,6 +601,10 @@ export class BlogService {
       coachMessage: raw.coach_message ?? '',
       isPublished: raw.is_published ?? true,
       viewsCount: raw.views_count ?? 0,
+      authorName: raw.author_name ?? undefined,
+      authorRole: raw.author_role ?? undefined,
+      authorAvatarUrl: raw.author_avatar_url ?? undefined,
+      coverImageUrl: raw.cover_image_url ?? undefined,
       createdAt: raw.created_at ?? new Date().toISOString(),
       updatedAt: raw.updated_at ?? new Date().toISOString(),
     };

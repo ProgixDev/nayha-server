@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -39,12 +40,26 @@ export class BlogController {
     return { article };
   }
 
+  @Post('articles/:id/track')
+  async trackView(
+    @Param('id') id: string,
+    @Body() body?: { userId?: string; sessionId?: string },
+  ) {
+    return this.blogService.trackView(id, body?.userId, body?.sessionId);
+  }
+
   // ── Admin Endpoints ────────────────────────────────────────────────────────
 
   @Get('admin/articles')
   async listAdminArticles() {
     const articles = await this.blogService.listAdmin();
     return { articles };
+  }
+
+  @Get('admin/stats')
+  async getAdminStats() {
+    const stats = await this.blogService.getStats();
+    return { stats };
   }
 
   @Post('admin/articles')
@@ -54,7 +69,16 @@ export class BlogController {
   }
 
   @Put('admin/articles/:id')
-  async updateArticle(
+  async updateArticlePut(
+    @Param('id') id: string,
+    @Body() dto: UpdateBlogArticleDto,
+  ) {
+    const article = await this.blogService.update(id, dto);
+    return { article };
+  }
+
+  @Patch('admin/articles/:id')
+  async updateArticlePatch(
     @Param('id') id: string,
     @Body() dto: UpdateBlogArticleDto,
   ) {
