@@ -95,4 +95,8 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   subscription_status?: string;
+
+  @IsOptional()
+  @IsString()
+  avatar_url?: string | null;
 }

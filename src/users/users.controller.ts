@@ -1,12 +1,17 @@
 import {
+  BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -82,5 +87,33 @@ export class UsersController {
   @UseGuards(SupabaseJwtGuard)
   touchActivity(@CurrentUser() user: AuthUser) {
     return this.usersService.touchActivity(user.id);
+  }
+
+  @Post('me/avatar')
+  @UseGuards(SupabaseJwtGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  uploadAvatar(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile()
+    file: {
+      buffer: Buffer;
+      mimetype?: string;
+      originalname?: string;
+    },
+  ) {
+    if (!file) {
+      throw new BadRequestException('Aucun fichier fourni');
+    }
+    return this.usersService.uploadAvatar(
+      user.id,
+      file.buffer,
+      file.mimetype || 'image/jpeg',
+    );
+  }
+
+  @Delete('me/avatar')
+  @UseGuards(SupabaseJwtGuard)
+  deleteAvatar(@CurrentUser() user: AuthUser) {
+    return this.usersService.deleteAvatar(user.id);
   }
 }

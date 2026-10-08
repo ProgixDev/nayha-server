@@ -106,6 +106,7 @@ export class UsersService {
       subscription_status?: string;
       subscription_started_at?: string;
       subscription_expires_at?: string;
+      avatar_url?: string | null;
     },
   ) {
     const enriched = { ...updates };
@@ -344,6 +345,61 @@ export class UsersService {
       .update({ updated_at: now })
       .eq('id', userId);
     return { success: true, updated_at: now };
+  }
+
+  async uploadAvatar(userId: string, fileBuffer: Buffer, mimeType: string) {
+    const ext = mimeType.includes('png') ? 'png' : 'jpg';
+    const filePath = `${userId}/avatar_${Date.now()}.${ext}`;
+
+    const { error: uploadError } = await this.supabase.storage
+      .from('avatars')
+      .upload(filePath, fileBuffer, {
+        contentType: mimeType,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      this.logger.error(
+        `Avatar upload failed for user ${userId}: ${uploadError.message}`,
+      );
+      throw new InternalServerErrorException(
+        'Échec du téléchargement de la photo de profil',
+      );
+    }
+
+    const { data: publicUrlData } = this.supabase.storage
+      .from('avatars')
+      .getPublicUrl(filePath);
+
+    const avatarUrl = publicUrlData.publicUrl;
+
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ avatar_url: avatarUrl })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException('Échec de la mise à jour du profil');
+    }
+
+    return data;
+  }
+
+  async deleteAvatar(userId: string) {
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ avatar_url: null })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException('Échec de la suppression de la photo');
+    }
+
+    return data;
   }
 
   private formatUserName(meta: any, rawProfile?: any, email?: string): string {
