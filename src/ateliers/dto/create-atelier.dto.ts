@@ -20,6 +20,10 @@ export class CreateAtelierDto {
   category?: string;
 
   @IsString()
+  @IsOptional()
+  step_tag?: string;
+
+  @IsString()
   duree: string;
 
   @IsString()
@@ -32,7 +36,23 @@ export class CreateAtelierDto {
 
   @IsArray()
   @IsOptional()
+  objectifs?: string[];
+
+  @IsArray()
+  @IsOptional()
   tips?: string[];
+
+  @IsString()
+  @IsOptional()
+  resource_url?: string;
+
+  @IsString()
+  @IsOptional()
+  speaker_name?: string;
+
+  @IsString()
+  @IsOptional()
+  speaker_role?: string;
 
   @IsString()
   @IsOptional()
