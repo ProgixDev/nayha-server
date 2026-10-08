@@ -11,6 +11,7 @@ import {
 import { AteliersService } from './ateliers.service';
 import { CreateAtelierDto } from './dto/create-atelier.dto';
 import { UpdateAtelierDto } from './dto/update-atelier.dto';
+import { TrackAtelierViewDto } from './dto/track-atelier-view.dto';
 
 @Controller('ateliers')
 export class AteliersController {
@@ -53,6 +54,14 @@ export class AteliersController {
   @Delete('admin/:id')
   remove(@Param('id') id: string) {
     return this.ateliersService.remove(id);
+  }
+
+  @Post(':id/track')
+  trackView(
+    @Param('id') id: string,
+    @Body() dto: TrackAtelierViewDto,
+  ) {
+    return this.ateliersService.trackView(id, dto);
   }
 
   // ── Detail endpoint ────────────────────────────────────────────────────────

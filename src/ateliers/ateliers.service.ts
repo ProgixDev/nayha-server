@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateAtelierDto } from './dto/create-atelier.dto';
 import { UpdateAtelierDto } from './dto/update-atelier.dto';
+import { TrackAtelierViewDto } from './dto/track-atelier-view.dto';
 
 export interface AtelierEntity {
   id: string;
@@ -558,12 +559,74 @@ export class AteliersService {
     return [...this.inMemoryAteliers];
   }
 
+  async trackView(id: string, dto: TrackAtelierViewDto) {
+    const now = new Date().toISOString();
+    try {
+      // 1. Insert real view/completion record
+      await this.supabase.from('atelier_views').insert({
+        atelier_id: id,
+        user_id: dto.user_id || null,
+        completed: dto.completed ?? false,
+        watch_seconds: dto.watch_seconds ?? 0,
+        created_at: now,
+        updated_at: now,
+      });
+
+      // 2. Increment views_count on ateliers table
+      const { data: current } = await this.supabase
+        .from('ateliers')
+        .select('views_count')
+        .eq('id', id)
+        .single();
+      const newCount = (current?.views_count || 0) + 1;
+      await this.supabase
+        .from('ateliers')
+        .update({ views_count: newCount, updated_at: now })
+        .eq('id', id);
+    } catch (_) {
+      // fallback
+    }
+
+    const index = this.inMemoryAteliers.findIndex((a) => a.id === id);
+    if (index !== -1) {
+      this.inMemoryAteliers[index].views_count =
+        (this.inMemoryAteliers[index].views_count || 0) + 1;
+    }
+
+    return { success: true };
+  }
+
   async getStats(): Promise<AtelierStatsEntity[]> {
     const list = await this.listAdmin();
+    let viewsData: any[] = [];
+
+    try {
+      const { data, error } = await this.supabase
+        .from('atelier_views')
+        .select('atelier_id, user_id, completed, watch_seconds');
+      if (!error && data) {
+        viewsData = data;
+      }
+    } catch (_) {
+      // fallback
+    }
+
     return list.map((a) => {
-      const watchCount = a.views_count || Math.floor(Math.random() * 40) + 20;
-      const uniqueViewers = Math.round(watchCount * 0.75);
-      const completionRate = Math.min(0.95, 0.65 + (watchCount % 30) / 100);
+      const records = viewsData.filter((r) => r.atelier_id === a.id);
+      const watchCount = Math.max(records.length, a.views_count || 0);
+      const uniqueViewers =
+        records.length > 0
+          ? new Set(records.map((r) => r.user_id).filter(Boolean)).size ||
+            (watchCount > 0 ? 1 : 0)
+          : a.views_count > 0
+            ? 1
+            : 0;
+      const completedCount = records.filter((r) => r.completed).length;
+      const completionRate =
+        watchCount > 0
+          ? completedCount / (records.length || watchCount)
+          : 0;
+
       return {
         id: a.id,
         titre: a.titre,
@@ -572,7 +635,7 @@ export class AteliersService {
         duree: a.duree,
         watch_count: watchCount,
         unique_viewers: uniqueViewers,
-        completion_rate: completionRate,
+        completion_rate: Math.min(1, Math.max(0, completionRate)),
       };
     });
   }
