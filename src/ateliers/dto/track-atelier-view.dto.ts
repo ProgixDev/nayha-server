@@ -5,6 +5,10 @@ export class TrackAtelierViewDto {
   @IsOptional()
   user_id?: string;
 
+  @IsString()
+  @IsOptional()
+  session_id?: string;
+
   @IsBoolean()
   @IsOptional()
   completed?: boolean;

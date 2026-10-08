@@ -584,10 +584,50 @@ export class AteliersService {
           ? 1.0
           : 0.0;
 
+    const sessionId = dto.session_id || dto.user_id;
+
     try {
-      // 1. Insert real view/progress record
+      if (sessionId) {
+        // Check if this session already exists
+        const { data: existing } = await this.supabase
+          .from('atelier_views')
+          .select('id, progress_rate, watch_seconds, completed')
+          .eq('atelier_id', id)
+          .eq('session_id', sessionId)
+          .maybeSingle();
+
+        if (existing) {
+          // Update the session's max progress instead of creating a duplicate view
+          const higherProgress = Math.max(
+            Number(existing.progress_rate || 0),
+            progressRate,
+          );
+          const higherSeconds = Math.max(
+            Number(existing.watch_seconds || 0),
+            dto.watch_seconds || 0,
+          );
+          const isCompleted =
+            existing.completed ||
+            (dto.completed ?? (higherProgress >= 0.85));
+
+          await this.supabase
+            .from('atelier_views')
+            .update({
+              progress_rate: higherProgress,
+              watch_seconds: higherSeconds,
+              completed: isCompleted,
+              updated_at: now,
+            })
+            .eq('id', existing.id);
+
+          return { success: true, progress_rate: higherProgress };
+        }
+      }
+
+      // New viewing session: insert 1 view record
       await this.supabase.from('atelier_views').insert({
         atelier_id: id,
+        session_id: sessionId || null,
         user_id: dto.user_id || null,
         completed: dto.completed ?? progressRate >= 0.85,
         watch_seconds: dto.watch_seconds ?? 0,
@@ -596,7 +636,7 @@ export class AteliersService {
         updated_at: now,
       });
 
-      // 2. Increment views_count on ateliers table
+      // Increment views_count by 1 only for a genuine new session
       const { data: current } = await this.supabase
         .from('ateliers')
         .select('views_count')
@@ -607,14 +647,13 @@ export class AteliersService {
         .from('ateliers')
         .update({ views_count: newCount, updated_at: now })
         .eq('id', id);
+
+      const index = this.inMemoryAteliers.findIndex((a) => a.id === id);
+      if (index !== -1) {
+        this.inMemoryAteliers[index].views_count = newCount;
+      }
     } catch (_) {
       // fallback
-    }
-
-    const index = this.inMemoryAteliers.findIndex((a) => a.id === id);
-    if (index !== -1) {
-      this.inMemoryAteliers[index].views_count =
-        (this.inMemoryAteliers[index].views_count || 0) + 1;
     }
 
     return { success: true, progress_rate: progressRate };
@@ -627,7 +666,9 @@ export class AteliersService {
     try {
       const { data, error } = await this.supabase
         .from('atelier_views')
-        .select('atelier_id, user_id, completed, watch_seconds, progress_rate');
+        .select(
+          'id, session_id, atelier_id, user_id, completed, watch_seconds, progress_rate, created_at',
+        );
       if (!error && data) {
         viewsData = data;
       }
@@ -637,26 +678,39 @@ export class AteliersService {
 
     return list.map((a) => {
       const records = viewsData.filter((r) => r.atelier_id === a.id);
-      const watchCount = Math.max(records.length, a.views_count || 0);
+
+      // Deduplicate records by session_id to get true viewing sessions
+      const sessionMap = new Map<string, any>();
+      for (const r of records) {
+        const key =
+          r.session_id ||
+          (r.user_id ? `${r.user_id}_${r.created_at?.slice(0, 13)}` : r.id);
+        if (
+          !sessionMap.has(key) ||
+          Number(r.progress_rate || 0) >
+            Number(sessionMap.get(key).progress_rate || 0)
+        ) {
+          sessionMap.set(key, r);
+        }
+      }
+
+      const sessions = Array.from(sessionMap.values());
+      const watchCount = sessions.length;
       const uniqueViewers =
-        records.length > 0
-          ? new Set(records.map((r) => r.user_id).filter(Boolean)).size ||
+        sessions.length > 0
+          ? new Set(sessions.map((r) => r.user_id).filter(Boolean)).size ||
             (watchCount > 0 ? 1 : 0)
-          : a.views_count > 0
-            ? 1
-            : 0;
+          : 0;
 
       let completionRate = 0;
-      if (records.length > 0) {
-        const totalProgress = records.reduce((sum, r) => {
+      if (sessions.length > 0) {
+        const totalProgress = sessions.reduce((sum, r) => {
           if (r.progress_rate !== null && r.progress_rate !== undefined) {
             return sum + Number(r.progress_rate);
           }
           return sum + (r.completed ? 1.0 : 0.0);
         }, 0);
-        completionRate = totalProgress / records.length;
-      } else if (a.views_count && a.views_count > 0) {
-        completionRate = 0;
+        completionRate = totalProgress / sessions.length;
       }
 
       return {
