@@ -561,13 +561,37 @@ export class AteliersService {
 
   async trackView(id: string, dto: TrackAtelierViewDto) {
     const now = new Date().toISOString();
+    let progressRate = dto.progress_rate;
+
+    if (progressRate === undefined || progressRate === null) {
+      if (dto.completed) {
+        progressRate = 1.0;
+      } else if (dto.watch_seconds && dto.watch_seconds > 0) {
+        const atelier = this.inMemoryAteliers.find((a) => a.id === id);
+        if (atelier && atelier.duree) {
+          const parts = atelier.duree.split(':').map(Number);
+          const totalSec = (parts[0] || 0) * 60 + (parts[1] || 0);
+          if (totalSec > 0) {
+            progressRate = Math.min(1.0, dto.watch_seconds / totalSec);
+          }
+        }
+      }
+    }
+    progressRate =
+      progressRate !== undefined
+        ? Math.min(1.0, Math.max(0.0, progressRate))
+        : dto.completed
+          ? 1.0
+          : 0.0;
+
     try {
-      // 1. Insert real view/completion record
+      // 1. Insert real view/progress record
       await this.supabase.from('atelier_views').insert({
         atelier_id: id,
         user_id: dto.user_id || null,
-        completed: dto.completed ?? false,
+        completed: dto.completed ?? progressRate >= 0.85,
         watch_seconds: dto.watch_seconds ?? 0,
+        progress_rate: progressRate,
         created_at: now,
         updated_at: now,
       });
@@ -593,7 +617,7 @@ export class AteliersService {
         (this.inMemoryAteliers[index].views_count || 0) + 1;
     }
 
-    return { success: true };
+    return { success: true, progress_rate: progressRate };
   }
 
   async getStats(): Promise<AtelierStatsEntity[]> {
@@ -603,7 +627,7 @@ export class AteliersService {
     try {
       const { data, error } = await this.supabase
         .from('atelier_views')
-        .select('atelier_id, user_id, completed, watch_seconds');
+        .select('atelier_id, user_id, completed, watch_seconds, progress_rate');
       if (!error && data) {
         viewsData = data;
       }
@@ -621,11 +645,19 @@ export class AteliersService {
           : a.views_count > 0
             ? 1
             : 0;
-      const completedCount = records.filter((r) => r.completed).length;
-      const completionRate =
-        watchCount > 0
-          ? completedCount / (records.length || watchCount)
-          : 0;
+
+      let completionRate = 0;
+      if (records.length > 0) {
+        const totalProgress = records.reduce((sum, r) => {
+          if (r.progress_rate !== null && r.progress_rate !== undefined) {
+            return sum + Number(r.progress_rate);
+          }
+          return sum + (r.completed ? 1.0 : 0.0);
+        }, 0);
+        completionRate = totalProgress / records.length;
+      } else if (a.views_count && a.views_count > 0) {
+        completionRate = 0;
+      }
 
       return {
         id: a.id,

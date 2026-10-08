@@ -12,4 +12,8 @@ export class TrackAtelierViewDto {
   @IsNumber()
   @IsOptional()
   watch_seconds?: number;
+
+  @IsNumber()
+  @IsOptional()
+  progress_rate?: number;
 }
