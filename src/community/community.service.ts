@@ -326,7 +326,7 @@ export class CommunityService {
             .from('community_posts')
             .update({ comments_count: nextCount })
             .eq('id', postId);
-        } catch (_) {}
+        } catch (_) { }
 
         return data;
       }
