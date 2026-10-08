@@ -96,14 +96,22 @@ BEGIN
   END IF;
 END $$;
 
--- Update Admin Role Permissions to include blog_view and blog_edit
-UPDATE admin_role_permissions
-SET permissions = jsonb_set(
-  jsonb_set(permissions, '{blog_view}', 'true'::jsonb),
-  '{blog_edit}',
-  CASE WHEN role IN ('super_admin', 'admin') THEN 'true'::jsonb ELSE 'false'::jsonb END
-)
-WHERE role IN ('super_admin', 'admin', 'moderator', 'viewer');
+-- Update Admin Role Permissions to include blog_view and blog_edit if table exists
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables 
+    WHERE table_schema = 'public' AND table_name = 'admin_role_permissions'
+  ) THEN
+    UPDATE admin_role_permissions
+    SET permissions = jsonb_set(
+      jsonb_set(permissions, '{blog_view}', 'true'::jsonb),
+      '{blog_edit}',
+      CASE WHEN role IN ('super_admin', 'admin') THEN 'true'::jsonb ELSE 'false'::jsonb END
+    )
+    WHERE role IN ('super_admin', 'admin', 'moderator', 'viewer');
+  END IF;
+END $$;
 
 -- Seed Initial 6 Blog Articles
 INSERT INTO blog_articles (
