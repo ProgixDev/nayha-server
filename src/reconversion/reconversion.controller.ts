@@ -56,6 +56,22 @@ export class ReconversionController {
     });
   }
 
+  /** Searches certifications for ROME métiers in the target's domain whose
+   * Formacodes overlap most with the target métier. */
+  @Get('formations/:codeRome/domaines-proches')
+  getFormationsDomainesProches(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+    @Query('modalite') modalite?: string,
+    @Query('rayonKm') rayonKm?: string,
+  ) {
+    return this.reconversionService.getFormationsDomainesProches(
+      user.id,
+      codeRome,
+      { modalite, rayonKm },
+    );
+  }
+
   /** Returns full detail for a single training offer by its composite ID. */
   @Get('formations/:codeRome/detail')
   getFormationDetail(

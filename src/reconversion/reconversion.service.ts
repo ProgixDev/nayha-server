@@ -465,6 +465,189 @@ export class ReconversionService {
     return proximityPage;
   }
 
+  /**
+   * Search nearby training options without changing the user's target métier.
+   * Candidate métiers come from the same ROME professional domain and are
+   * ranked by the Formacodes they share with the target. The existing exact
+   * ROME formation pipeline is reused for every candidate.
+   */
+  async getFormationsDomainesProches(
+    userId: string,
+    rawCodeRome: string,
+    options: { modalite?: string; rayonKm?: string } = {},
+  ) {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const { data: targetRow, error: targetError } = await this.supabase
+      .from('rome_metiers')
+      .select('code, data')
+      .eq('code', codeRome)
+      .single();
+
+    if (targetError || !targetRow) {
+      throw new NotFoundException(`Métier ${codeRome} introuvable`);
+    }
+
+    const target = targetRow.data as Record<string, any>;
+    const domain = target.domaineProfessionnel as
+      | { code?: string; libelle?: string }
+      | undefined;
+    const targetFormacodes = (
+      Array.isArray(target.formacodes) ? target.formacodes : []
+    ).reduce((formacodes: Map<string, string>, item: any) => {
+      const code = String(item?.code ?? '').trim();
+      if (code) formacodes.set(code, String(item?.libelle ?? ''));
+      return formacodes;
+    }, new Map<string, string>());
+    const genericTitleTerms = new Set([
+      'ingenieur',
+      'ingenieure',
+      'expert',
+      'experte',
+      'metier',
+      'professionnel',
+      'professionnelle',
+    ]);
+    const targetTitleTerms = new Set(
+      this.normalized(String(target.libelle ?? ''))
+        .split(' ')
+        .filter((term) => term.length > 2 && !genericTitleTerms.has(term)),
+    );
+
+    if (!domain?.code || targetFormacodes.size === 0) {
+      return {
+        target: { codeRome, libelle: target.libelle ?? codeRome },
+        strategy: 'same-domain-formacode-overlap',
+        metiersAnalyses: [],
+        results: [],
+      };
+    }
+
+    const { data: domainRows, error: domainError } = await this.supabase
+      .from('rome_metiers')
+      .select('code, data')
+      .eq('data->domaineProfessionnel->>code', domain.code);
+
+    if (domainError) {
+      throw new Error(
+        `Métiers du domaine ROME indisponibles: ${domainError.message}`,
+      );
+    }
+
+    const candidates = (domainRows ?? [])
+      .filter((row) => row.code !== codeRome)
+      .map((row) => {
+        const data = row.data as Record<string, any>;
+        const candidateFormacodes = (
+          Array.isArray(data.formacodes) ? data.formacodes : []
+        ).reduce((formacodes: Map<string, string>, item: any) => {
+          const code = String(item?.code ?? '').trim();
+          if (code) formacodes.set(code, String(item?.libelle ?? ''));
+          return formacodes;
+        }, new Map<string, string>());
+        const sharedFormacodes = [...candidateFormacodes.keys()].filter((code) =>
+          targetFormacodes.has(code),
+        );
+        const specificSharedFormacodes = sharedFormacodes.filter((code) =>
+          /sécurité|cybersécurité|réseau/i.test(
+            targetFormacodes.get(code) ?? candidateFormacodes.get(code) ?? '',
+          ),
+        );
+        const candidateTitleTerms = new Set(
+          this.normalized(String(data.libelle ?? ''))
+            .split(' ')
+            .filter((term) => term.length > 2),
+        );
+        const sharedTitleTerms = [...targetTitleTerms].filter(
+          (term) =>
+            candidateTitleTerms.has(term) ||
+            (term === 'securite' && candidateTitleTerms.has('cybersecurite')),
+        );
+
+        return {
+          codeRome: row.code as string,
+          libelle: String(data.libelle ?? row.code),
+          sharedFormacodes,
+          relevance:
+            sharedFormacodes.length +
+            2 * specificSharedFormacodes.length +
+            2 * sharedTitleTerms.length,
+        };
+      })
+      .filter((candidate) => candidate.relevance > 0)
+      .sort(
+        (a, b) =>
+          b.relevance - a.relevance || a.libelle.localeCompare(b.libelle),
+      )
+      .slice(0, 8);
+
+    const results: Record<string, unknown>[] = [];
+    const seen = new Map<string, Record<string, unknown>>();
+    const metiersRecherches: string[] = [];
+
+    // Search in small batches to avoid eight slow, sequential catalogue
+    // requests while keeping pressure on the upstream APIs bounded.
+    for (let offset = 0; offset < candidates.length; offset += 3) {
+      const batch = candidates.slice(offset, offset + 3);
+      const pages = await Promise.all(
+        batch.map((candidate) =>
+          this.getFormationsByRome(userId, candidate.codeRome, {
+            modalite: options.modalite,
+            rayonKm: options.rayonKm,
+          }),
+        ),
+      );
+
+      for (const [index, page] of pages.entries()) {
+        const candidate = batch[index];
+        metiersRecherches.push(candidate.codeRome);
+        for (const formation of page.results) {
+          const id = this.text(formation['id']);
+          const key = this.text(formation['certificationCode'], id);
+          const existing = key ? seen.get(key) : undefined;
+          if (existing) {
+            const associated = (existing['metiersProches'] as unknown[]) ?? [];
+            associated.push({
+              codeRome: candidate.codeRome,
+              libelle: candidate.libelle,
+              pertinence: candidate.relevance,
+            });
+            existing['metiersProches'] = associated;
+            continue;
+          }
+
+          const enriched: Record<string, unknown> = {
+            ...formation,
+            metierProche: {
+              codeRome: candidate.codeRome,
+              libelle: candidate.libelle,
+              pertinence: candidate.relevance,
+              formacodesCommuns: candidate.sharedFormacodes,
+            },
+          };
+          if (key) seen.set(key, enriched);
+          results.push(enriched);
+        }
+      }
+
+      // The UI shows ten results per page; once we have a useful set, avoid
+      // spending more time querying codes that ranked lower.
+      if (results.length >= ReconversionService.formationsPageSize) break;
+    }
+
+    return {
+      target: {
+        codeRome,
+        libelle: target.libelle ?? codeRome,
+        domaineCode: domain.code,
+        domaineLibelle: domain.libelle ?? null,
+      },
+      strategy: 'same-domain-formacode-overlap',
+      metiersAnalyses: candidates,
+      metiersRecherches,
+      results,
+    };
+  }
+
   /** Emits diagnostic metadata only; no user or contact data. */
   private logFormationsPage(
     codeRome: string,
