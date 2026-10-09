@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -6,6 +7,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import {
+  isPremiumProfile,
+  SUBSCRIPTION_COLUMNS,
+  SubscriptionFields,
+} from '../common/subscription';
 
 @Injectable()
 export class UsersService {
@@ -92,6 +98,7 @@ export class UsersService {
       linkedin_relevant?: boolean | null;
       linkedin_relevance_metier_id?: string | null;
       cv_base?: Record<string, any>;
+      cv_identity?: Record<string, any>;
       linkedin_profil?: Record<string, any>;
       retour_emploi_journey?: Record<string, any>;
       parcours_type?: string;
@@ -141,6 +148,21 @@ export class UsersService {
       enriched.subscription_status = 'active';
       enriched.subscription_started_at = now.toISOString();
       enriched.subscription_expires_at = expiresAt.toISOString();
+    }
+
+    // CV templates other than "classique" and custom accent colours are
+    // reserved to Premium.
+    const cvTemplate: unknown = enriched.cv_identity?.template;
+    const cvAccent: unknown = enriched.cv_identity?.accent;
+    const usesPremiumStyle =
+      (typeof cvTemplate === 'string' && cvTemplate !== 'classique') ||
+      (typeof cvAccent === 'string' && cvAccent !== '');
+    if (usesPremiumStyle && !(await this.isPremium(userId, enriched))) {
+      enriched.cv_identity = {
+        ...enriched.cv_identity,
+        template: 'classique',
+        accent: null,
+      };
     }
 
     const { data, error } = await this.supabase
@@ -347,9 +369,91 @@ export class UsersService {
     return { success: true, updated_at: now };
   }
 
-  async uploadAvatar(userId: string, fileBuffer: Buffer, mimeType: string) {
+  private async isPremium(
+    userId: string,
+    pending: SubscriptionFields,
+  ): Promise<boolean> {
+    const { data } = await this.supabase
+      .from('user_profiles')
+      .select(SUBSCRIPTION_COLUMNS)
+      .eq('id', userId)
+      .maybeSingle<SubscriptionFields>();
+    return isPremiumProfile({ ...data, ...pending });
+  }
+
+  uploadAvatar(userId: string, fileBuffer: Buffer, mimeType: string) {
+    return this.uploadProfileImage(userId, fileBuffer, mimeType, {
+      column: 'avatar_url',
+      prefix: 'avatar',
+      errorMessage: 'Échec du téléchargement de la photo de profil',
+    });
+  }
+
+  uploadCvPhoto(userId: string, fileBuffer: Buffer, mimeType: string) {
+    return this.uploadProfileImage(userId, fileBuffer, mimeType, {
+      column: 'cv_photo_url',
+      prefix: 'cv_photo',
+      errorMessage: 'Échec du téléchargement de la photo du CV',
+    });
+  }
+
+  async uploadCvSignature(userId: string, fileBuffer: Buffer) {
+    if (!(await this.isPremium(userId, {}))) {
+      throw new ForbiddenException('La signature est réservée au Premium');
+    }
+    return this.uploadProfileImage(userId, fileBuffer, 'image/png', {
+      column: 'cv_signature_url',
+      prefix: 'cv_signature',
+      errorMessage: 'Échec de l’enregistrement de la signature',
+    });
+  }
+
+  async deleteCvSignature(userId: string) {
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ cv_signature_url: null })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException(
+        'Échec de la suppression de la signature',
+      );
+    }
+
+    return data;
+  }
+
+  async deleteCvPhoto(userId: string) {
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ cv_photo_url: null })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException(
+        'Échec de la suppression de la photo',
+      );
+    }
+
+    return data;
+  }
+
+  private async uploadProfileImage(
+    userId: string,
+    fileBuffer: Buffer,
+    mimeType: string,
+    target: {
+      column: 'avatar_url' | 'cv_photo_url' | 'cv_signature_url';
+      prefix: string;
+      errorMessage: string;
+    },
+  ) {
     const ext = mimeType.includes('png') ? 'png' : 'jpg';
-    const filePath = `${userId}/avatar_${Date.now()}.${ext}`;
+    const filePath = `${userId}/${target.prefix}_${Date.now()}.${ext}`;
 
     const { error: uploadError } = await this.supabase.storage
       .from('avatars')
@@ -360,22 +464,18 @@ export class UsersService {
 
     if (uploadError) {
       this.logger.error(
-        `Avatar upload failed for user ${userId}: ${uploadError.message}`,
+        `${target.prefix} upload failed for user ${userId}: ${uploadError.message}`,
       );
-      throw new InternalServerErrorException(
-        'Échec du téléchargement de la photo de profil',
-      );
+      throw new InternalServerErrorException(target.errorMessage);
     }
 
     const { data: publicUrlData } = this.supabase.storage
       .from('avatars')
       .getPublicUrl(filePath);
 
-    const avatarUrl = publicUrlData.publicUrl;
-
     const { data, error } = await this.supabase
       .from('user_profiles')
-      .update({ avatar_url: avatarUrl })
+      .update({ [target.column]: publicUrlData.publicUrl })
       .eq('id', userId)
       .select()
       .single();

@@ -116,4 +116,58 @@ export class UsersController {
   deleteAvatar(@CurrentUser() user: AuthUser) {
     return this.usersService.deleteAvatar(user.id);
   }
+
+  @Post('me/cv-photo')
+  @UseGuards(SupabaseJwtGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  uploadCvPhoto(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile()
+    file: {
+      buffer: Buffer;
+      mimetype?: string;
+      originalname?: string;
+    },
+  ) {
+    if (!file) {
+      throw new BadRequestException('Aucun fichier fourni');
+    }
+    return this.usersService.uploadCvPhoto(
+      user.id,
+      file.buffer,
+      file.mimetype || 'image/jpeg',
+    );
+  }
+
+  @Delete('me/cv-photo')
+  @UseGuards(SupabaseJwtGuard)
+  deleteCvPhoto(@CurrentUser() user: AuthUser) {
+    return this.usersService.deleteCvPhoto(user.id);
+  }
+
+  @Post('me/cv-signature')
+  @UseGuards(SupabaseJwtGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  uploadCvSignature(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile()
+    file: {
+      buffer: Buffer;
+      mimetype?: string;
+    },
+  ) {
+    if (!file) {
+      throw new BadRequestException('Aucun fichier fourni');
+    }
+    if (file.mimetype && file.mimetype !== 'image/png') {
+      throw new BadRequestException('La signature doit être une image PNG');
+    }
+    return this.usersService.uploadCvSignature(user.id, file.buffer);
+  }
+
+  @Delete('me/cv-signature')
+  @UseGuards(SupabaseJwtGuard)
+  deleteCvSignature(@CurrentUser() user: AuthUser) {
+    return this.usersService.deleteCvSignature(user.id);
+  }
 }

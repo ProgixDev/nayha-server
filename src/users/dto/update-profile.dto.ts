@@ -54,6 +54,10 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsObject()
+  cv_identity?: Record<string, any>;
+
+  @IsOptional()
+  @IsObject()
   linkedin_profil?: Record<string, any>;
 
   @IsOptional()
