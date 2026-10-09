@@ -104,6 +104,7 @@ export class AiController {
     @Body('targetRole') targetRole?: string,
     @Body('company') company?: string,
     @Body('isSpontaneous') isSpontaneous?: boolean,
+    @Body('tone') tone?: string,
   ) {
     return this.aiService.generateLettreMotivation(
       user.id,
@@ -111,6 +112,7 @@ export class AiController {
       targetRole,
       company,
       isSpontaneous,
+      tone,
     );
   }
 

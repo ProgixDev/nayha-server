@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import { isPremiumProfile, SUBSCRIPTION_COLUMNS } from '../common/subscription';
 
 export interface PortraitExperience {
   titre: string;
@@ -126,7 +127,24 @@ export interface LettreMotivationResult {
   motsCles: string[];
   entreprise: string;
   poste: string;
+  langue: string;
 }
+
+export type LettreTone = 'formel' | 'dynamique' | 'creatif';
+
+const LETTRE_TONE_INSTRUCTIONS: Record<LettreTone, string> = {
+  formel: '',
+  dynamique: `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TONE — DIRECT & ENERGETIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Short sentences, strong action verbs, results first (numbers when the profile has them). Confident without being casual. Keep vouvoiement in French.`,
+  creatif: `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TONE — PERSONAL & MEMORABLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Open the "accroche" with one short, concrete scene or fact from her own background that links to the offer (never invented). Warmer, more personal voice, still professional. Keep vouvoiement in French.`,
+};
 
 const ROME_GRANDDOMAINE_CODES = new Set([
   'A',
@@ -2058,13 +2076,14 @@ FORMAT JSON (strict):
     targetRole?: string,
     company?: string,
     isSpontaneous = false,
+    tone?: string,
   ): Promise<LettreMotivationResult> {
     await this.checkSubscription(userId);
     // 1. Fetch user profile — portrait + diagnostics + linkedin + cv for full context
     const { data: profile, error: profileError } = await this.supabase
       .from('user_profiles')
       .select(
-        'portrait_data, diagnostic_vie_data, diagnostic_pro_data, linkedin_profil, cv_base',
+        `portrait_data, diagnostic_vie_data, diagnostic_pro_data, linkedin_profil, cv_base, ${SUBSCRIPTION_COLUMNS}`,
       )
       .eq('id', userId)
       .single();
@@ -2170,6 +2189,13 @@ Savoir-être : ${(portrait.savoirEtre || []).join(', ')}`;
         ? `\n=== OFFRE D'EMPLOI VISÉE ===\n${jobOffer}`
         : `\n=== CANDIDATURE SPONTANÉE ===\nMétier cible : ${targetRole || 'Poste visé'}\nEntreprise cible : ${company || 'Entreprise'}`;
 
+    // Tones other than the default formal one are a Premium option.
+    const effectiveTone: LettreTone =
+      isPremiumProfile(profile) && (tone === 'dynamique' || tone === 'creatif')
+        ? tone
+        : 'formel';
+    const toneInstruction = LETTRE_TONE_INSTRUCTIONS[effectiveTone];
+
     // 2. Call OpenAI
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o',
@@ -2251,6 +2277,7 @@ ABSOLUTE PROHIBITIONS
 - French letters: vouvoiement throughout
 - Length: 200–270 words maximum. Every word must earn its place.
 
+${toneInstruction}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT — strict JSON
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2285,6 +2312,7 @@ OUTPUT — strict JSON
         motsCles: Array.isArray(parsed.motsCles) ? parsed.motsCles : [],
         entreprise: parsed.entreprise || company || 'Entreprise',
         poste: parsed.poste || targetRole || 'Poste visé',
+        langue: typeof parsed.langue === 'string' ? parsed.langue : 'fr',
       };
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
