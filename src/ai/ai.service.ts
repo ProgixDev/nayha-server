@@ -2709,17 +2709,24 @@ Génère le debrief.`,
       messages: [
         {
           role: 'system',
-          content: `Tu es un recruteur expérimenté qui fait passer un entretien pour le poste de ${candidature.poste} chez ${candidature.entreprise}.
+          content: `Tu es un recruteur expérimenté qui fait passer un VRAI entretien d'embauche pour le poste de ${candidature.poste} chez ${candidature.entreprise}. La simulation doit ressembler au plus près à un entretien réel : même déroulé, mêmes questions classiques, même ton.
 
-Génère exactement 6 questions d'entretien réalistes et progressives, dans l'ordre d'un vrai entretien :
-1. Présentation / parcours
-2. Motivation pour ce poste
-3. Compétence technique ou mise en situation
-4. Question DIFFICILE : la pause professionnelle ou un trou dans le parcours
-5. Question DIFFICILE : les prétentions salariales
-6. Question DIFFICILE : un échec ou une difficulté
+Génère entre 6 et 10 questions, dans l'ordre d'un vrai entretien. Choisis le nombre selon la richesse de l'offre et le niveau du poste (poste qualifié ou offre détaillée → 8 à 10 ; poste simple ou offre courte → 6 à 7).
 
-Les questions doivent être SPÉCIFIQUES à l'offre et au poste — pas génériques.
+DÉROULÉ OBLIGATOIRE :
+1. OUVERTURE (toujours la 1re question) : la présentation, formulée comme un recruteur la pose réellement ("Pour commencer, présentez-vous et parlez-moi de votre parcours.").
+2. CONNAISSANCE DE L'ENTREPRISE : "Que connaissez-vous de ${candidature.entreprise} ?" ou "Pourquoi avoir postulé chez nous plutôt qu'ailleurs ?".
+3. MOTIVATION POUR LE POSTE : pourquoi ce poste, ce qui l'attire dans les missions.
+4. CŒUR DU POSTE : 1 à 3 questions techniques ou mises en situation SPÉCIFIQUES aux missions et outils de l'offre (ex. "Comment géreriez-vous… ?").
+5. COMPORTEMENTAL : 1 à 2 questions "Racontez-moi une situation où…" liées aux qualités demandées.
+6. DIFFÉRENCIATION : "Qu'est-ce qui vous différencie des autres candidats ?" ou "Pourquoi devrions-nous vous choisir ?".
+7. QUESTIONS DIFFICILES (2 à 3, "hard": true), choisies parmi : une pause ou un changement dans le parcours (seulement si le profil en contient), les prétentions salariales, un échec ou un point faible, la disponibilité / mobilité.
+8. CLÔTURE (toujours la dernière question) : "Avez-vous des questions à nous poser ?".
+
+RÈGLES :
+- Vouvoiement, ton naturel de recruteur, une seule question par item (pas de questions à tiroirs).
+- Les questions des étapes 4, 5 et 7 doivent citer des éléments concrets de l'offre (missions, outils, contexte) — pas de génériques interchangeables.
+- "hard": true uniquement pour les questions de l'étape 7.
 ${portraitContext}
 ${offerContext}
 ${debriefContext}
@@ -2728,7 +2735,7 @@ Retourne en JSON : { "questions": [{ "text": "string", "hard": boolean }] }`,
         },
         {
           role: 'user',
-          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}\n\nGénère les 6 questions.`,
+          content: `Poste : ${candidature.poste}\nEntreprise : ${candidature.entreprise}\n\nGénère les questions de l'entretien (entre 6 et 10), en commençant par la présentation et en terminant par "Avez-vous des questions à nous poser ?".`,
         },
       ],
     });
@@ -2737,8 +2744,17 @@ Retourne en JSON : { "questions": [{ "text": "string", "hard": boolean }] }`,
     if (!content) throw new Error('OpenAI returned empty response');
 
     const parsed = JSON.parse(content);
+    const questions = Array.isArray(parsed.questions)
+      ? (parsed.questions as { text?: unknown; hard?: unknown }[])
+          .filter((q) => typeof q?.text === 'string' && q.text.trim())
+          .map((q) => ({ text: String(q.text).trim(), hard: q.hard === true }))
+      : [];
+    // Cap at 10 if the model drifts, keeping the closing question last.
     return {
-      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
+      questions:
+        questions.length > 10
+          ? [...questions.slice(0, 9), questions[questions.length - 1]]
+          : questions,
     };
   }
 
