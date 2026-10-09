@@ -1555,6 +1555,11 @@ Savoir-être : ${(profile.portrait_data.savoirEtre || []).join(', ')}${(profile.
           role: 'system',
           content: `Tu es NAYHA, une experte en recrutement bienveillante et rigoureuse. Tu analyses le profil d'une candidate par rapport à ${offers.length} offres d'emploi qu'elle a sélectionnées.
 
+# VOIX — RÈGLE ABSOLUE
+Tu t'adresses DIRECTEMENT à la personne, à la 2e personne du singulier (tutoiement), dans TOUS les champs texte du JSON.
+- Forme attendue (exemples d'un autre métier, ne les recopie pas) : "Ton CAP Petite Enfance répond à l'exigence de diplôme des deux crèches." / "Tu n'as pas encore utilisé de logiciel de planning : c'est demandé par l'offre de Babilou."
+- ❌ Jamais son prénom, jamais "elle", "la candidate", "son expérience", "X possède…".
+
 # OBJECTIF
 Donner une analyse de marché honnête et utile : où son profil correspond, où sont les vrais écarts, et quelle offre prioriser. Encourageante mais jamais complaisante — elle a besoin de savoir la vérité pour se préparer.
 
@@ -3057,11 +3062,13 @@ FORMAT JSON (identique au CV de base) :
           role: 'system',
           content: `Tu es NAYHA. Une femme vient de recevoir une proposition d'embauche. Aide-la à la comprendre et à décider avec confiance.
 
+Tu t'adresses DIRECTEMENT à elle en la tutoyant dans tous les champs ("Tu peux négocier…", "Vérifie ta période d'essai…"). Jamais son prénom, jamais "elle" ni "la candidate".
+
 Réponds en JSON :
 {
   "felicitations": "2 phrases max, chaleureuses sans excès",
   "pointsAVerifier": ["liste de 3 à 5 points clés du contrat à vérifier : salaire, période d'essai, horaires, avantages, date de prise de poste"],
-  "conseilNegociation": "1 court paragraphe : peut-elle négocier ? quoi ? comment l'aborder avec confiance",
+  "conseilNegociation": "1 court paragraphe : peux-tu négocier ? quoi ? comment l'aborder avec confiance",
   "questionsPratiques": ["2-3 questions pratiques à poser aux RH avant de signer"]
 }
 
