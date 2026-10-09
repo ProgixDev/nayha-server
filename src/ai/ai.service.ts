@@ -130,6 +130,12 @@ export interface LettreMotivationResult {
   langue: string;
 }
 
+/** Old app versions sent this filler when an experience had no description. */
+function stripPlaceholder(details: unknown): string {
+  const text = typeof details === 'string' ? details.trim() : '';
+  return /^missions et responsabilités clés\.?$/i.test(text) ? '' : text;
+}
+
 export type LettreTone = 'formel' | 'dynamique' | 'creatif';
 
 const LETTRE_TONE_INSTRUCTIONS: Record<LettreTone, string> = {
@@ -1943,7 +1949,8 @@ Détecte la langue des données saisies (profil, expériences). Rédige TOUT le 
 - REFORMULER ≠ HALLUCINER. Exemples légitimes :
   - "Created digital content" → "Designed and produced digital content strategies for web and social media"
   - "Used Figma daily" → "Leveraged Figma for UI design, prototyping, and cross-team collaboration"
-  CE QUI RESTE INTERDIT : inventer un livrable, un KPI, un outil non mentionné.
+  CE QUI RESTE INTERDIT : inventer un livrable, un KPI, un chiffre, un client, un prix ou un outil non mentionné.
+- EXCEPTION ENCADRÉE : quand une expérience ou une formation est peu renseignée, tu DOIS décrire les missions typiques du poste et les enseignements typiques du diplôme (voir sections ci-dessous). Ce sont des descriptions de rôle génériques et plausibles, jamais des réalisations chiffrées.
 
 # MÉTIER CIBLE
 Si un métier cible est fourni, angle TOUT le CV vers ce métier :
@@ -1963,8 +1970,9 @@ Si un métier cible est fourni, angle TOUT le CV vers ce métier :
 ## "experiences"
 - Liste structurée de TOUTES les expériences fournies, sans exception et dans le même ordre.
 - Conserve : entreprise, titre, période EXACTS.
-- "details" : produis 2-4 phrases concrètes par expérience, ou 2-4 propositions séparées par " • ". Utilise les informations de l'expérience, du diagnostic professionnel et du portrait pour expliciter les missions, méthodes, outils et compétences réellement déductibles. Même lorsqu'une expérience est peu renseignée, donne une description utile à partir des faits disponibles ; ne la laisse jamais avec une simple formule générique.
-- N'invente aucun résultat, outil ou responsabilité. Si les informations sont limitées, reste factuel mais développe le contexte, les activités et les compétences transférables que les données permettent d'établir.
+- "details" : 3 à 5 missions, UNE PAR LIGNE, séparées par "\n" (sans puce ni tiret). Chaque mission commence par un verbe d'action (Concevoir, Développer, Coordonner, Assurer…) et tient en une phrase.
+- Si la candidate a décrit l'expérience : reformule et enrichis sa description en missions claires.
+- Si la description est vide ou très courte : rédige les missions et responsabilités TYPIQUES de ce poste dans ce type de structure, en t'appuyant sur le titre du poste, l'entreprise, le diagnostic et les compétences listées par la candidate qui sont cohérentes avec ce poste (ex. Développeur Mobile + compétences Flutter, Firebase → "Développer des fonctionnalités mobiles multiplateformes avec Flutter"). Ne laisse JAMAIS une expérience avec une formule générique.
 
 ## "skills"
 - CONSERVE TOUTES les compétences fournies par la candidate. C'est critique pour les filtres ATS.
@@ -1974,8 +1982,10 @@ Si un métier cible est fourni, angle TOUT le CV vers ce métier :
 - Les outils spécifiques (Adobe Photoshop, Figma, etc.) doivent apparaître individuellement, pas regroupés sous "Adobe Creative Suite" seul.
 
 ## "education"
-- Texte linéaire multi-lignes, une ligne par formation.
-- Reprends TOUTES les formations fournies, avec l'intitulé, l'établissement, les dates et les détails/description saisis.
+- Texte multi-lignes, UNE LIGNE PAR FORMATION, séparées par "\n", dans l'ordre fourni.
+- Format de chaque ligne : "Intitulé · Établissement · Année — enseignements clés".
+- Reprends EXACTEMENT l'intitulé, l'établissement et l'année saisis (omets l'année si absente).
+- "enseignements clés" : la description saisie si elle existe, sinon 3 à 4 matières ou compétences typiquement acquises dans ce diplôme, séparées par des virgules (ex. Master Big Data → "Machine learning, entrepôts de données, pipelines ETL, Spark").
 - Ne déplace jamais une formation dans "experiences" et n'invente aucune formation.
 
 FORMAT JSON (strict):
@@ -1988,7 +1998,7 @@ FORMAT JSON (strict):
         },
         {
           role: 'user',
-          content: `${portraitContext}${diagnosticContext}${linkedinContext}${targetRoleContext}${jobOfferContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère un CV complet, détaillé et ATS-friendly en JSON. Reprends toutes les expériences et formations fournies ; ne résume pas le CV à quelques lignes.`,
+          content: `${portraitContext}${diagnosticContext}${linkedinContext}${targetRoleContext}${jobOfferContext}\n\n=== DONNÉES SAISIES PAR LA CANDIDATE ===\n${JSON.stringify(contextData, null, 2)}\n\nGénère un CV complet, détaillé et ATS-friendly en JSON. Reprends toutes les expériences et formations fournies ; chaque expérience doit avoir 3 à 5 missions et chaque formation ses enseignements clés, même si la candidate n'a rien décrit.`,
         },
       ],
     });
@@ -2023,9 +2033,21 @@ FORMAT JSON (strict):
       const submittedExperiences = (experiences || [])
         .map((experience: any, index: number) => {
           if (!experience || typeof experience !== 'object') return null;
-          const generated = Array.isArray(parsed.experiences)
-            ? parsed.experiences[index]
-            : null;
+          const generatedList: any[] = Array.isArray(parsed.experiences)
+            ? parsed.experiences
+            : [];
+          // Same position when its company matches (titles may be
+          // re-angled), else the first entry with that company, else position.
+          const companyOf = (item: any) =>
+            String(item?.company || '')
+              .trim()
+              .toLowerCase();
+          const company = companyOf(experience);
+          const generated =
+            company && companyOf(generatedList[index]) !== company
+              ? (generatedList.find((item) => companyOf(item) === company) ??
+                generatedList[index])
+              : generatedList[index];
           const title = String(
             experience.title || experience.jobTitle || generated?.title || '',
           ).trim();
@@ -2036,11 +2058,11 @@ FORMAT JSON (strict):
               experience.company || generated?.company || '',
             ).trim(),
             period: String(experience.period || generated?.period || '').trim(),
+            // Prefer the AI version: it rewrites the user's text into missions
+            // and fills empty experiences. Placeholder texts count as empty.
             details: String(
-              experience.details ||
-                experience.description ||
-                generated?.details ||
-                '',
+              generated?.details ||
+                stripPlaceholder(experience.details || experience.description),
             ).trim(),
           };
         })
@@ -2061,11 +2083,41 @@ FORMAT JSON (strict):
                 }))
               : [],
         skills: Array.isArray(parsed.skills) ? parsed.skills : [],
-        education: submittedEducation || parsed.education || '',
+        education: this.enrichedEducation(
+          parsed.education,
+          submittedEducation,
+          formations,
+        ),
       };
     } catch (e) {
       throw new Error('Failed to parse OpenAI response');
     }
+  }
+
+  /// Uses the AI education (with key subjects) only when it still names every
+  /// submitted formation; otherwise falls back to what the user typed.
+  private enrichedEducation(
+    generated: unknown,
+    submitted: string,
+    formations: any[],
+  ): string {
+    if (typeof generated !== 'string' || !generated.trim()) return submitted;
+    if (!submitted) return generated.trim();
+    const lower = generated.toLowerCase();
+    const titles = (formations || [])
+      .map((formation: any) =>
+        String(
+          typeof formation === 'string'
+            ? formation
+            : formation?.intitule || formation?.title || '',
+        )
+          .trim()
+          .toLowerCase(),
+      )
+      .filter(Boolean);
+    return titles.every((title) => lower.includes(title))
+      ? generated.trim()
+      : submitted;
   }
 
   // ─── Lettre de motivation ───────────────────────────────────
