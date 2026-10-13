@@ -1,5 +1,10 @@
 import { plainToInstance } from 'class-transformer';
-import { IsNotEmpty, IsString, validateSync } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  validateSync,
+} from 'class-validator';
 
 class EnvironmentVariables {
   @IsString()
@@ -21,6 +26,16 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   OPENAI_API_KEY: string;
+
+  /** RevenueCat secret API key (v1). Payments stay off until it is set. */
+  @IsOptional()
+  @IsString()
+  REVENUECAT_SECRET_KEY?: string;
+
+  /** Value RevenueCat sends in the webhook Authorization header. */
+  @IsOptional()
+  @IsString()
+  REVENUECAT_WEBHOOK_AUTH?: string;
 }
 
 export function validate(config: Record<string, unknown>) {
