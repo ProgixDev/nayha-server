@@ -190,11 +190,14 @@ export class CreationService {
             role: 'system',
             content:
               `Tu aides une personne en France à imaginer une activité indépendante réaliste à partir de ses diagnostics de vie et professionnel. ` +
-              `Ancre chaque proposition dans ses compétences, expériences, intérêts, motivations et contraintes effectivement renseignés. ` +
+              `Ancre chaque proposition dans ses compétences transférables, expériences, intérêts, motivations et contraintes effectivement renseignés, mais ne la limite pas à son métier actuel ni à la vente directe de son savoir-faire. ` +
+              `Aide-la à voir plus large : croise ses forces avec des besoins d'autres secteurs, de nouveaux publics, des produits ou outils numériques, et des projets co-construits avec une personne experte du domaine. ` +
+              `Par exemple, une expérience en développement logiciel peut servir à créer un outil pour un secteur qu'elle connaît, en le concevant avec une professionnelle de ce secteur; ne reprends cet exemple que s'il correspond réellement au profil. ` +
+              `Sur les 5 pistes, propose au moins 2 transferts vers un autre domaine, un produit ou un partenariat lorsque le parcours contient des compétences transférables; garde des pistes variées et ne force pas une idée sans lien crédible. ` +
               `Ne répète pas une donnée personnelle sensible et ne déduis pas de capacité à partir de l'âge ou d'une situation familiale. ` +
-              `Propose exactement 5 pistes distinctes, concrètes et accessibles à explorer; diversifie les formats seulement s'ils correspondent au profil. ` +
+              `Propose exactement 5 pistes distinctes, concrètes et accessibles à explorer. Ne transforme pas automatiquement chaque idée en prestation de service indépendante. ` +
               `N'invente ni diplôme, ni expérience, ni obligation réglementaire. Si une activité peut être réglementée, précise qu'il faut vérifier les conditions officielles. ` +
-              `Réponds uniquement en JSON avec cette forme: {"suggestions":[{"label":"libellé court de 2 à 5 mots pour une puce","title":"nom concret de l'activité","category":"thématique courte","subtitle":"description en une phrase","whyThisFits":"lien explicite avec un élément du diagnostic","family":"service|artisanat|produit|commerceLocal|digital","target":"b2c|b2b|mixte","channel":"local|enLigne|mixte","tasks":"missions concrètes","public":"clientèle visée","resources":"moyens de départ","constraints":"contrainte ou point de vigilance","prereq":"formation ou vérification nécessaire, ou aucun prérequis particulier identifié","isRegulated":false}]}. ` +
+              `Réponds uniquement en JSON avec cette forme: {"suggestions":[{"label":"libellé court de 2 à 5 mots pour une puce","title":"nom concret de l'activité","category":"thématique ou secteur à explorer","subtitle":"description en une phrase qui rend l'idée concrète","whyThisFits":"compétence ou expérience transférable qui rend la piste crédible","complementaryPartner":"personne experte ou partenaire utile pour co-construire et vérifier le besoin, ou indique qu'aucun partenaire n'est indispensable","family":"service|artisanat|produit|commerceLocal|digital","target":"b2c|b2b|mixte","channel":"local|enLigne|mixte","tasks":"missions concrètes","public":"clientèle visée","resources":"moyens de départ","constraints":"contrainte ou point de vigilance","prereq":"formation ou vérification nécessaire, ou aucun prérequis particulier identifié","isRegulated":false}]}. ` +
               `Écris en français, tutoie, reste encourageante et prudente.`,
           },
           {
@@ -230,6 +233,9 @@ export class CreationService {
           category: text(suggestion.category, 48),
           subtitle: text(suggestion.subtitle, 180),
           whyThisFits: text(suggestion.whyThisFits, 180),
+          complementaryPartner:
+            text(suggestion.complementaryPartner, 180) ||
+            'Valide le besoin avec une personne du domaine avant de te lancer.',
           family: allowedFamilies.has(family) ? family : 'service',
           target: allowedTargets.has(target) ? target : 'mixte',
           channel: allowedChannels.has(channel) ? channel : 'mixte',
