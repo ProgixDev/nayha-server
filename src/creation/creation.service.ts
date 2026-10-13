@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import { NAYHA_SCOPE_RULE } from '../common/nayha-scope';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
 import { CreationJourneyContextDto } from './dto/creation-journey-context.dto';
@@ -229,7 +230,7 @@ export class CreationService {
       [
         {
           role: 'system',
-          content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données, le contexte enregistré et le parcours de la personne, ne les redemande pas. Appuie-toi sur les diagnostics uniquement quand ils sont utiles au projet et ne répète pas de données personnelles. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nDiagnostic de vie : ${JSON.stringify(diagnosticContext.vie)}\nDiagnostic professionnel : ${JSON.stringify(diagnosticContext.professionnel)}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
+          content: `${NAYHA_SCOPE_RULE}\n\nTu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données, le contexte enregistré et le parcours de la personne, ne les redemande pas. Appuie-toi sur les diagnostics uniquement quand ils sont utiles au projet et ne répète pas de données personnelles. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nDiagnostic de vie : ${JSON.stringify(diagnosticContext.vie)}\nDiagnostic professionnel : ${JSON.stringify(diagnosticContext.professionnel)}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
         },
         ...history.map((turn) =>
           turn.role === 'assistant'

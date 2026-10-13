@@ -8,6 +8,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CompleteCoachingSessionDto } from './dto/complete-coaching-session.dto';
 import { StartCoachingSessionDto } from './dto/start-coaching-session.dto';
+import { NAYHA_SCOPE_RULE } from '../common/nayha-scope';
 
 @Injectable()
 export class CoachingService {
@@ -27,7 +28,9 @@ export class CoachingService {
 
   async start(userId: string, dto: StartCoachingSessionDto) {
     const userContext = await this.loadUserContext(userId);
-    const shortTitle = this.formatTitle(dto.triggerContext || dto.initialMessage);
+    const shortTitle = this.formatTitle(
+      dto.triggerContext || dto.initialMessage,
+    );
     const { data: session, error } = await this.supabase
       .from('coaching_sessions')
       .insert({
@@ -415,10 +418,18 @@ Réponds UNIQUEMENT en JSON avec la clé "suggestions" contenant une liste de 4 
     if (lower.includes('entretien')) {
       return 'Préparer un entretien';
     }
-    if (lower.includes('reconversion') || lower.includes('métier') || lower.includes('voie')) {
+    if (
+      lower.includes('reconversion') ||
+      lower.includes('métier') ||
+      lower.includes('voie')
+    ) {
       return 'Clarifier ma reconversion';
     }
-    if (lower.includes('activité') || lower.includes('création') || lower.includes('client')) {
+    if (
+      lower.includes('activité') ||
+      lower.includes('création') ||
+      lower.includes('client')
+    ) {
       return 'Lancer mon activité';
     }
 
@@ -523,7 +534,7 @@ Réponds UNIQUEMENT en JSON avec la clé "suggestions" contenant une liste de 4 
       messages: [
         {
           role: 'system',
-          content: `Tu es le coach confiance professionnel de NAYHA. Tu accompagnes une conversation ouverte, sans questionnaire, nombre d’étapes imposé ni engagement obligatoire. Réponds avec empathie et de manière utile au dernier message. ${isOpening ? 'Si la personne n’a encore rien écrit, accueille-la avec une invitation ouverte.' : 'Pose au plus une question seulement si elle aide réellement à avancer.'} Réponse en français, 90 mots maximum, sans diagnostic médical ni promesse. Utilise le contexte sans citer de données personnelles inutilement.`,
+          content: `${NAYHA_SCOPE_RULE}\n\nTu es le coach confiance professionnel de NAYHA. Tu accompagnes une conversation ouverte, sans questionnaire, nombre d’étapes imposé ni engagement obligatoire. Réponds avec empathie et de manière utile au dernier message. ${isOpening ? 'Si la personne n’a encore rien écrit, accueille-la avec une invitation ouverte.' : 'Pose au plus une question seulement si elle aide réellement à avancer.'} Réponse en français, 90 mots maximum, sans diagnostic médical ni promesse. Utilise le contexte sans citer de données personnelles inutilement.`,
         },
         {
           role: 'user',
