@@ -105,6 +105,9 @@ const offerHintKeys = [
 ];
 const hintRule = `"hints": pour chaque champ listé, un exemple court (12 mots maximum) commençant par "Ex : ", écrit pour CE projet précis (son activité, son public, sa zone), que la personne lira en gris dans un champ vide avant d'écrire. Tutoie. Jamais d'exemple générique ni d'un autre métier. `;
 
+/** Added to every project prompt: generic advice is what users reject most. */
+const groundingRule = `Tout ce que tu écris doit être propre à CE projet : appuie-toi sur son activité, son public et son canal réels tels qu'ils sont décrits. Si une phrase pourrait s'appliquer à n'importe quel projet, réécris-la. N'utilise jamais d'exemple tiré d'un autre métier ou d'un autre secteur. `;
+
 /** Official sources the app may link to; anything else is dropped. */
 const officialDomains = [
   'service-public.gouv.fr',
@@ -122,6 +125,10 @@ const officialDomains = [
   'travail-emploi.gouv.fr',
   'cma-france.fr',
   'cci.fr',
+  'cnil.fr',
+  'arcom.fr',
+  'developer.apple.com',
+  'support.google.com',
 ];
 function officialUrl(value: unknown): string {
   if (typeof value !== 'string') return '';
@@ -465,6 +472,7 @@ export class CreationService {
             role: 'system',
             content:
               `Tu aides une personne qui débute dans la création d'activité en France à préparer l'étude de son marché. Elle n'a aucune connaissance en marketing. ` +
+              groundingRule +
               `À partir de son idée, propose des points de départ simples qu'elle pourra corriger. Utilise des mots du quotidien, sans jargon (pas de "persona", "B2B", "segment", "lead"). Tutoie la personne dans "problems", "places" et "alternatives" ; seules les "questions" sont au vouvoiement. ` +
               `"problems": 3 formulations différentes du problème que vivent ses futurs clients, chacune en une phrase courte qui dit qui, dans quelle situation et ce qui est difficile. Décris le problème, pas la solution. ` +
               `"places": 5 endroits concrets, en ligne ou près de chez elle, où rencontrer ces personnes pour leur parler (label de 2 à 5 mots, detail d'une phrase). Adapte-les au canal et à la zone indiqués. ` +
@@ -581,6 +589,7 @@ export class CreationService {
             role: 'system',
             content:
               `Tu aides une personne qui débute dans la création d'activité en France à rédiger sa première offre. Elle ne connaît ni le marketing ni la gestion. ` +
+              groundingRule +
               `Pars de son idée, de son public, du problème décrit et des retours de terrain fournis. Écris avec des mots simples, en tutoyant, sans jargon ni superlatifs. ` +
               `"offerTitle": nom concret de l'offre en 3 à 7 mots. "targetCustomer": le public précis en quelques mots, en minuscules (ex: "parents actifs de jeunes enfants"). ` +
               `"keyBenefit": ce que le client gagne, commençant par un verbe à l'infinitif, en minuscules (ex: "retrouver du temps le soir"). ` +
@@ -677,11 +686,12 @@ export class CreationService {
     system: string,
     context: unknown,
     maxTokens: number,
+    temperature = 0.4,
   ): Promise<Record<string, unknown>> {
     try {
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.4,
+        temperature,
         max_tokens: maxTokens,
         response_format: { type: 'json_object' },
         messages: [
@@ -711,17 +721,29 @@ export class CreationService {
     const context = await this.journeyContext(userId, dto);
     const parsed = await this.askJson(
       'Demarches starter',
-      `Tu aides une personne qui crée son activité en France. Liste uniquement les règles PROPRES à son activité qu'elle doit vérifier avant de démarrer : diplôme ou qualification exigé, déclaration ou autorisation spécifique (mairie, préfecture, DDPP…), formation obligatoire (ex: hygiène alimentaire), assurance obligatoire propre au métier, normes de sécurité, règles de vente particulières. ` +
-        `N'inclus PAS les démarches générales (immatriculation, compte bancaire, facturation, ACRE, assurance RC Pro générale) : elles sont déjà listées ailleurs. ` +
-        `Si l'activité n'a pas de règle particulière connue, renvoie une liste vide. N'invente aucune règle ; en cas de doute, formule "à vérifier auprès de…". ` +
-        `Pour chaque règle : "title" (une action courte commençant par un verbe), "description" (une à deux phrases simples, en tutoyant, qui disent pourquoi et auprès de qui), "officialUrl" (une page officielle française en https si tu en es sûre, sinon chaîne vide). 0 à 4 règles. ` +
-        `Réponds uniquement en JSON: {"requirements":[{"title":"","description":"","officialUrl":""}]}`,
+      `Tu es une conseillère en création d'entreprise en France. À partir de la description précise du projet (idée, public, canal, format et contenu de l'offre), liste les obligations et vérifications réglementaires propres à CETTE activité. ` +
+        `Avant de répondre, passe en revue chacune de ces questions et garde chaque point qui s'applique au projet : ` +
+        `1) Le public : des enfants ou des mineurs, des personnes vulnérables, des patients, des professionnels ? ` +
+        `2) Les données : le projet collecte-t-il des données personnelles (comptes, suivi, paiements, données de santé, données d'enfants) ? Si oui : RGPD, registre et information des personnes, consentement parental pour les moins de 15 ans, politique de confidentialité, CNIL. ` +
+        `3) Le canal : application mobile, site, vente ou abonnement en ligne ? Si oui : règles de publication des stores (Apple App Store, Google Play, et leurs règles spécifiques pour les applis destinées aux enfants), mentions légales, CGU ou CGV, droit de rétractation et résiliation des abonnements, accessibilité. ` +
+        `4) Un produit physique : normes de sécurité (ex. marquage CE des jouets), étiquetage, hygiène alimentaire, DDPP. ` +
+        `5) Le métier : diplôme, carte professionnelle, déclaration ou autorisation, assurance obligatoire propre au métier. ` +
+        `6) Le contenu : droits d'auteur des textes, images, musiques et contenus pédagogiques utilisés, dépôt de la marque à l'INPI. ` +
+        `N'inclus PAS les démarches générales de création : immatriculation, choix du statut, compte bancaire, facturation, ACRE, assurance RC Pro générale. ` +
+        `Chaque règle doit nommer l'élément concret du projet qui la déclenche (ex. "Ton appli s'adresse à des enfants : …"). Une règle qui pourrait s'appliquer à n'importe quelle activité est interdite. ` +
+        `Renvoie une liste vide uniquement si le projet ne touche réellement à aucun de ces sujets. N'invente ni article de loi, ni montant, ni délai : en cas de doute, écris "à vérifier auprès de …". ` +
+        `Donne 3 à 6 règles, de la plus importante à la moins importante. Pour chaque règle : "title" (une action courte commençant par un verbe), "description" (une à deux phrases simples, en tutoyant, qui disent pourquoi pour ce projet et auprès de qui vérifier), "obligation" ("obligatoire" si c'est une obligation légale certaine pour ce projet, sinon "aVerifier"), "officialUrl" (page officielle en https si tu en es sûre, sinon chaîne vide). ` +
+        `Réponds uniquement en JSON: {"requirements":[{"title":"","description":"","obligation":"","officialUrl":""}]}`,
       {
         activite: context.activite,
+        marche: context.marche
+          ? { customerProblem: context.marche.customerProblem }
+          : null,
         offre: context.offre,
         statut: context.statut,
       },
-      700,
+      1100,
+      0.2,
     );
     const text = (value: unknown, max: number) =>
       typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -737,12 +759,14 @@ export class CreationService {
             : {};
         return {
           title: text(item.title, 120),
-          description: text(item.description, 280),
+          description: text(item.description, 320),
+          obligation:
+            item.obligation === 'obligatoire' ? 'obligatoire' : 'aVerifier',
           officialUrl: officialUrl(item.officialUrl),
         };
       })
       .filter((item) => item.title)
-      .slice(0, 4);
+      .slice(0, 6);
     return { requirements };
   }
 
@@ -754,6 +778,7 @@ export class CreationService {
     const parsed = await this.askJson(
       'Contacts starter',
       `Tu aides une personne qui débute à trouver ses premiers clients en France, sans expérience commerciale et sans gros budget. ` +
+        groundingRule +
         `Appuie-toi sur son offre, son public, les lieux repérés pour rencontrer ses clients et les échanges déjà notés (notamment les personnes qui veulent une suite). Tutoie, mots simples, aucune technique agressive ni achat de publicité au départ. ` +
         `"actions": 6 actions concrètes et réalistes vu son temps disponible : 3 pour "30 jours", 2 pour "60 jours", 1 pour "90 jours". Chaque action : "timeframe" (30 jours, 60 jours ou 90 jours), "channel" (2 à 4 mots : où ou avec qui), "title" (commence par un verbe, cite son offre, un lieu ou un public réel de son projet), "description" (comment faire, en une ou deux phrases). ` +
         `"announcementMessage": un message court (60 mots max) qu'elle peut envoyer à son entourage pour annoncer son activité et demander des recommandations, au tutoiement, chaleureux, sans formule commerciale, signé "[Ton prénom]". ` +
