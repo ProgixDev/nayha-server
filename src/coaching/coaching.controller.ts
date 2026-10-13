@@ -10,6 +10,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
+import { PaidFeature } from '../subscriptions/paid-feature.decorator';
+import { PaidFeatureGuard } from '../subscriptions/paid-feature.guard';
 import {
   AuthUser,
   CurrentUser,
@@ -21,10 +23,11 @@ import { UpdateCoachingCommitmentDto } from './dto/update-coaching-commitment.dt
 import { CoachingService } from './coaching.service';
 
 @Controller('coaching')
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(SupabaseJwtGuard, PaidFeatureGuard)
 export class CoachingController {
   constructor(private readonly coachingService: CoachingService) {}
 
+  @PaidFeature('chat')
   @Post('sessions')
   start(@CurrentUser() user: AuthUser, @Body() dto: StartCoachingSessionDto) {
     return this.coachingService.start(user.id, dto);
@@ -44,6 +47,7 @@ export class CoachingController {
     return this.coachingService.getOffer(user.id);
   }
 
+  @PaidFeature('assist')
   @Get('suggestions')
   suggestions(@CurrentUser() user: AuthUser) {
     return this.coachingService.getSuggestions(user.id);
@@ -59,6 +63,7 @@ export class CoachingController {
     return this.coachingService.remove(user.id, id);
   }
 
+  @PaidFeature('chat')
   @Post('sessions/:id/messages')
   sendMessage(
     @CurrentUser() user: AuthUser,
@@ -68,6 +73,7 @@ export class CoachingController {
     return this.coachingService.sendMessage(user.id, id, dto.text);
   }
 
+  @PaidFeature('assist')
   @Post('sessions/:id/complete')
   complete(
     @CurrentUser() user: AuthUser,

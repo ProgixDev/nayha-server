@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
+import { PaidFeature } from '../subscriptions/paid-feature.decorator';
+import { PaidFeatureGuard } from '../subscriptions/paid-feature.guard';
 import {
   AuthUser,
   CurrentUser,
@@ -7,7 +9,7 @@ import {
 import { AiService } from './ai.service';
 
 @Controller('ai')
-@UseGuards(SupabaseJwtGuard)
+@UseGuards(SupabaseJwtGuard, PaidFeatureGuard)
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 
@@ -34,6 +36,7 @@ export class AiController {
     return this.aiService.getPlanAction(user.id);
   }
 
+  @PaidFeature('assist')
   @Post('evaluate')
   evaluateAdequation(
     @CurrentUser() user: AuthUser,
@@ -42,6 +45,7 @@ export class AiController {
     return this.aiService.evaluateAdequation(user.id, metierId);
   }
 
+  @PaidFeature('assist')
   @Post('analyse-offres')
   generateAnalyseOffres(
     @CurrentUser() user: AuthUser,
@@ -50,6 +54,7 @@ export class AiController {
     return this.aiService.generateAnalyseOffres(user.id, offers);
   }
 
+  @PaidFeature('document')
   @Post('linkedin-profile')
   generateLinkedinProfile(
     @CurrentUser() user: AuthUser,
@@ -63,6 +68,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('document')
   @Post('cv-adapte')
   adaptCv(
     @CurrentUser() user: AuthUser,
@@ -72,6 +78,7 @@ export class AiController {
     return this.aiService.adaptCv(user.id, offreText, poste);
   }
 
+  @PaidFeature('document')
   @Post('cv-metier')
   generateCv(
     @CurrentUser() user: AuthUser,
@@ -97,6 +104,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('document')
   @Post('lettre-motivation')
   generateLettreMotivation(
     @CurrentUser() user: AuthUser,
@@ -116,6 +124,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('document')
   @Post('relance')
   generateRelanceMessage(
     @CurrentUser() user: AuthUser,
@@ -124,6 +133,7 @@ export class AiController {
     return this.aiService.generateRelanceMessage(user.id, candidatureId);
   }
 
+  @PaidFeature('assist')
   @Post('bilan-mensuel')
   generateBilanMensuel(
     @CurrentUser() user: AuthUser,
@@ -132,6 +142,7 @@ export class AiController {
     return this.aiService.generateBilanMensuel(user.id, days ?? 30);
   }
 
+  @PaidFeature('assist')
   @Post('entretien-debrief')
   generateEntretienDebrief(
     @CurrentUser() user: AuthUser,
@@ -145,6 +156,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('simulation')
   @Post('simulation-entretien')
   generateSimulationQuestions(
     @CurrentUser() user: AuthUser,
@@ -153,6 +165,7 @@ export class AiController {
     return this.aiService.generateSimulationQuestions(user.id, candidatureId);
   }
 
+  @PaidFeature()
   @Post('simulation-feedback')
   generateSimulationFeedback(
     @CurrentUser() user: AuthUser,
@@ -168,6 +181,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature()
   @Post('simulation-score')
   generateSimulationScore(
     @CurrentUser() user: AuthUser,
@@ -182,6 +196,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('assist')
   @Post('proposition-embauche')
   generatePropositionEmbaucheHelp(
     @CurrentUser() user: AuthUser,
@@ -193,6 +208,7 @@ export class AiController {
     );
   }
 
+  @PaidFeature('assist')
   @Post('parcours-reussite')
   generateParcoursReussite(
     @CurrentUser() user: AuthUser,
