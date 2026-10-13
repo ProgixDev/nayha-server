@@ -8,10 +8,12 @@ export interface SubscriptionFields {
 export const SUBSCRIPTION_COLUMNS =
   'subscription_tier, subscription_status, subscription_expires_at, has_paid';
 
-/** Premium tier with a running subscription. Paid profiles without expiry
- * tracking are treated as active (legacy rule of the subscription gate). */
+/**
+ * Full access: a running subscription, whatever its plan. NAYHA has a single
+ * plan, so every subscriber gets what used to be the Premium extras. Paid
+ * profiles without expiry tracking are treated as active (legacy rule).
+ */
 export function isPremiumProfile(profile: SubscriptionFields): boolean {
-  if (profile.subscription_tier !== 'premium') return false;
   if (profile.has_paid && !profile.subscription_expires_at) return true;
   return (
     profile.subscription_status === 'active' &&
