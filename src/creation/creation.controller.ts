@@ -7,6 +7,7 @@ import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import { CreationService } from './creation.service';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
+import { CreationJourneyContextDto } from './dto/creation-journey-context.dto';
 import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
@@ -58,5 +59,23 @@ export class CreationController {
     @Body() dto: CreationOfferStarterDto,
   ) {
     return this.creationService.generateOfferStarter(user.id, dto);
+  }
+
+  /** List the rules specific to this activity to check before creating it. */
+  @Post('demarches-starter')
+  demarchesStarter(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationJourneyContextDto,
+  ) {
+    return this.creationService.generateDemarchesStarter(user.id, dto);
+  }
+
+  /** Draft first commercial actions and an announcement message. */
+  @Post('contacts-starter')
+  contactsStarter(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationJourneyContextDto,
+  ) {
+    return this.creationService.generateContactsStarter(user.id, dto);
   }
 }

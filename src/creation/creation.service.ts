@@ -10,6 +10,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
+import { CreationJourneyContextDto } from './dto/creation-journey-context.dto';
 import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
@@ -20,8 +21,32 @@ export interface CreationJourney {
   marche: JourneySection | null;
   offre: JourneySection | null;
   statut: JourneySection | null;
+  demarches: JourneySection | null;
+  contacts: JourneySection | null;
   updatedAt?: string;
 }
+
+/** Journey steps in order: saving a step requires the previous one. */
+const journeySteps = [
+  'situation',
+  'activite',
+  'marche',
+  'offre',
+  'statut',
+  'demarches',
+  'contacts',
+] as const;
+type JourneyStep = (typeof journeySteps)[number];
+const missingPreviousStep: Partial<Record<JourneyStep, string>> = {
+  activite: "L'étape 1 doit être confirmée avant de valider l'activité",
+  marche: "L'étape 2 doit être confirmée avant de valider l'étude de marché",
+  offre:
+    "L'étape 3 doit être confirmée avant de valider l'offre et sa viabilité",
+  statut: "L'étape 4 doit être confirmée avant de valider le statut",
+  demarches: "L'étape 5 doit être confirmée avant de valider les démarches",
+  contacts:
+    "L'étape 6 doit être confirmée avant de valider les premiers contacts",
+};
 
 const situationStatuses = [
   'salariee',
@@ -79,6 +104,41 @@ const offerHintKeys = [
   'coreProblem',
 ];
 const hintRule = `"hints": pour chaque champ listé, un exemple court (12 mots maximum) commençant par "Ex : ", écrit pour CE projet précis (son activité, son public, sa zone), que la personne lira en gris dans un champ vide avant d'écrire. Tutoie. Jamais d'exemple générique ni d'un autre métier. `;
+
+/** Official sources the app may link to; anything else is dropped. */
+const officialDomains = [
+  'service-public.gouv.fr',
+  'service-public.fr',
+  'entreprendre.service-public.gouv.fr',
+  'formalites.entreprises.gouv.fr',
+  'urssaf.fr',
+  'autoentrepreneur.urssaf.fr',
+  'francetravail.fr',
+  'inpi.fr',
+  'legifrance.gouv.fr',
+  'economie.gouv.fr',
+  'agriculture.gouv.fr',
+  'sante.gouv.fr',
+  'travail-emploi.gouv.fr',
+  'cma-france.fr',
+  'cci.fr',
+];
+function officialUrl(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  try {
+    const url = new URL(value.trim());
+    const host = url.hostname.replace(/^www\./, '');
+    return url.protocol === 'https:' &&
+      officialDomains.some(
+        (domain) => host === domain || host.endsWith(`.${domain}`),
+      )
+      ? url.toString()
+      : '';
+  } catch {
+    return '';
+  }
+}
+const actionTimeframes = ['30 jours', '60 jours', '90 jours'];
 
 /** Keeps only the expected hint fields, as short "Ex : …" strings. */
 function pickHints(value: unknown, keys: string[]): Record<string, string> {
@@ -158,27 +218,28 @@ export class CreationService {
       professionnel: withoutIdentity(profile?.diagnostic_pro_data),
     };
 
-    const completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      {
-        role: 'system',
-        content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données, le contexte enregistré et le parcours de la personne, ne les redemande pas. Appuie-toi sur les diagnostics uniquement quand ils sont utiles au projet et ne répète pas de données personnelles. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nDiagnostic de vie : ${JSON.stringify(diagnosticContext.vie)}\nDiagnostic professionnel : ${JSON.stringify(diagnosticContext.professionnel)}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
-      },
-      ...history.map((turn) =>
-        turn.role === 'assistant'
-          ? ({ role: 'assistant', content: turn.content } as const)
-          : ({ role: 'user', content: turn.content } as const),
-      ),
-      ...(!message && history.length === 0
-        ? [
-            {
-              role: 'user' as const,
-              content:
-                'La personne ouvre l’assistant. Accueille-la brièvement, présente ton aide pour son projet de création et pose une seule question ouverte.',
-            },
-          ]
-        : []),
-      ...(message ? [{ role: 'user' as const, content: message }] : []),
-    ];
+    const completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+      [
+        {
+          role: 'system',
+          content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données, le contexte enregistré et le parcours de la personne, ne les redemande pas. Appuie-toi sur les diagnostics uniquement quand ils sont utiles au projet et ne répète pas de données personnelles. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nDiagnostic de vie : ${JSON.stringify(diagnosticContext.vie)}\nDiagnostic professionnel : ${JSON.stringify(diagnosticContext.professionnel)}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
+        },
+        ...history.map((turn) =>
+          turn.role === 'assistant'
+            ? ({ role: 'assistant', content: turn.content } as const)
+            : ({ role: 'user', content: turn.content } as const),
+        ),
+        ...(!message && history.length === 0
+          ? [
+              {
+                role: 'user' as const,
+                content:
+                  'La personne ouvre l’assistant. Accueille-la brièvement, présente ton aide pour son projet de création et pose une seule question ouverte.',
+              },
+            ]
+          : []),
+        ...(message ? [{ role: 'user' as const, content: message }] : []),
+      ];
 
     try {
       const completion = await this.openai.chat.completions.create({
@@ -234,8 +295,14 @@ export class CreationService {
     }
     if (!profile) throw new NotFoundException('Profil utilisateur introuvable');
 
-    const diagnosticVie = profile.diagnostic_vie_data as Record<string, unknown> | null;
-    const diagnosticPro = profile.diagnostic_pro_data as Record<string, unknown> | null;
+    const diagnosticVie = profile.diagnostic_vie_data as Record<
+      string,
+      unknown
+    > | null;
+    const diagnosticPro = profile.diagnostic_pro_data as Record<
+      string,
+      unknown
+    > | null;
     if (!diagnosticVie && !diagnosticPro) {
       throw new BadRequestException(
         'Complète au moins un diagnostic pour recevoir des pistes personnalisées.',
@@ -244,7 +311,13 @@ export class CreationService {
 
     // The diagnostics provide the person's background; direct identifiers
     // aren't needed to suggest an activity.
-    const personalFields = new Set(['name', 'nom', 'prenom', 'firstName', 'lastName']);
+    const personalFields = new Set([
+      'name',
+      'nom',
+      'prenom',
+      'firstName',
+      'lastName',
+    ]);
     const withoutIdentity = (data: Record<string, unknown> | null) => {
       if (!data) return null;
       return Object.fromEntries(
@@ -289,9 +362,13 @@ export class CreationService {
       });
 
       const content = completion.choices[0]?.message?.content?.trim();
-      if (!content) throw new Error('OpenAI returned empty activity suggestions');
+      if (!content)
+        throw new Error('OpenAI returned empty activity suggestions');
       const parsed = JSON.parse(content) as { suggestions?: unknown };
-      if (!Array.isArray(parsed.suggestions) || parsed.suggestions.length === 0) {
+      if (
+        !Array.isArray(parsed.suggestions) ||
+        parsed.suggestions.length === 0
+      ) {
         throw new Error('OpenAI returned no activity suggestions');
       }
 
@@ -568,6 +645,160 @@ export class CreationService {
     }
   }
 
+  /** Saved journey merged with the fresher sections sent by the app. */
+  private async journeyContext(userId: string, dto: CreationJourneyContextDto) {
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .select('creation_journey')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(`Unable to load journey context: ${error.message}`);
+    }
+    const saved = this.normalizeJourney(data?.creation_journey);
+    const context = {
+      situation: dto.situation ?? saved.situation,
+      activite: dto.activite ?? saved.activite,
+      marche: dto.marche ?? saved.marche,
+      offre: dto.offre ?? saved.offre,
+      statut: dto.statut ?? saved.statut,
+    };
+    const idea = context.activite?.ideaDescription;
+    if (typeof idea !== 'string' || !idea.trim()) {
+      throw new BadRequestException(
+        "Décris d'abord ton idée d'activité à l'étape 2.",
+      );
+    }
+    return context;
+  }
+
+  private async askJson(
+    label: string,
+    system: string,
+    context: unknown,
+    maxTokens: number,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.4,
+        max_tokens: maxTokens,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content: `Contexte du projet : ${JSON.stringify(context).slice(0, 9000)}`,
+          },
+        ],
+      });
+      const content = completion.choices[0]?.message?.content?.trim();
+      if (!content) throw new Error(`OpenAI returned an empty ${label}`);
+      return JSON.parse(content) as Record<string, unknown>;
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(`${label} generation failed: ${detail}`);
+      throw new ServiceUnavailableException(
+        'Les propositions de NAYHA sont momentanément indisponibles. Réessaie dans un instant.',
+      );
+    }
+  }
+
+  async generateDemarchesStarter(
+    userId: string,
+    dto: CreationJourneyContextDto,
+  ) {
+    const context = await this.journeyContext(userId, dto);
+    const parsed = await this.askJson(
+      'Demarches starter',
+      `Tu aides une personne qui crée son activité en France. Liste uniquement les règles PROPRES à son activité qu'elle doit vérifier avant de démarrer : diplôme ou qualification exigé, déclaration ou autorisation spécifique (mairie, préfecture, DDPP…), formation obligatoire (ex: hygiène alimentaire), assurance obligatoire propre au métier, normes de sécurité, règles de vente particulières. ` +
+        `N'inclus PAS les démarches générales (immatriculation, compte bancaire, facturation, ACRE, assurance RC Pro générale) : elles sont déjà listées ailleurs. ` +
+        `Si l'activité n'a pas de règle particulière connue, renvoie une liste vide. N'invente aucune règle ; en cas de doute, formule "à vérifier auprès de…". ` +
+        `Pour chaque règle : "title" (une action courte commençant par un verbe), "description" (une à deux phrases simples, en tutoyant, qui disent pourquoi et auprès de qui), "officialUrl" (une page officielle française en https si tu en es sûre, sinon chaîne vide). 0 à 4 règles. ` +
+        `Réponds uniquement en JSON: {"requirements":[{"title":"","description":"","officialUrl":""}]}`,
+      {
+        activite: context.activite,
+        offre: context.offre,
+        statut: context.statut,
+      },
+      700,
+    );
+    const text = (value: unknown, max: number) =>
+      typeof value === 'string' ? value.trim().slice(0, max) : '';
+    const requirements = (
+      Array.isArray(parsed.requirements)
+        ? (parsed.requirements as unknown[])
+        : []
+    )
+      .map((value) => {
+        const item =
+          value !== null && typeof value === 'object'
+            ? (value as Record<string, unknown>)
+            : {};
+        return {
+          title: text(item.title, 120),
+          description: text(item.description, 280),
+          officialUrl: officialUrl(item.officialUrl),
+        };
+      })
+      .filter((item) => item.title)
+      .slice(0, 4);
+    return { requirements };
+  }
+
+  async generateContactsStarter(
+    userId: string,
+    dto: CreationJourneyContextDto,
+  ) {
+    const context = await this.journeyContext(userId, dto);
+    const parsed = await this.askJson(
+      'Contacts starter',
+      `Tu aides une personne qui débute à trouver ses premiers clients en France, sans expérience commerciale et sans gros budget. ` +
+        `Appuie-toi sur son offre, son public, les lieux repérés pour rencontrer ses clients et les échanges déjà notés (notamment les personnes qui veulent une suite). Tutoie, mots simples, aucune technique agressive ni achat de publicité au départ. ` +
+        `"actions": 6 actions concrètes et réalistes vu son temps disponible : 3 pour "30 jours", 2 pour "60 jours", 1 pour "90 jours". Chaque action : "timeframe" (30 jours, 60 jours ou 90 jours), "channel" (2 à 4 mots : où ou avec qui), "title" (commence par un verbe, cite son offre, un lieu ou un public réel de son projet), "description" (comment faire, en une ou deux phrases). ` +
+        `"announcementMessage": un message court (60 mots max) qu'elle peut envoyer à son entourage pour annoncer son activité et demander des recommandations, au tutoiement, chaleureux, sans formule commerciale, signé "[Ton prénom]". ` +
+        `Réponds uniquement en JSON: {"actions":[{"timeframe":"","channel":"","title":"","description":""}],"announcementMessage":""}`,
+      {
+        situation: context.situation,
+        activite: context.activite,
+        marche: context.marche,
+        offre: context.offre,
+      },
+      1100,
+    );
+    const text = (value: unknown, max: number) =>
+      typeof value === 'string' ? value.trim().slice(0, max) : '';
+    const actions = (
+      Array.isArray(parsed.actions) ? (parsed.actions as unknown[]) : []
+    )
+      .map((value) => {
+        const item =
+          value !== null && typeof value === 'object'
+            ? (value as Record<string, unknown>)
+            : {};
+        const timeframe = text(item.timeframe, 20);
+        return {
+          timeframe: actionTimeframes.includes(timeframe)
+            ? timeframe
+            : '30 jours',
+          channel: text(item.channel, 40),
+          title: text(item.title, 140),
+          description: text(item.description, 280),
+        };
+      })
+      .filter((action) => action.title)
+      .slice(0, 8);
+    if (!actions.length) {
+      throw new ServiceUnavailableException(
+        'Les propositions de NAYHA sont momentanément indisponibles. Réessaie dans un instant.',
+      );
+    }
+    return {
+      actions,
+      announcementMessage: text(parsed.announcementMessage, 600),
+    };
+  }
+
   async getJourney(userId: string): Promise<CreationJourney> {
     const { data, error } = await this.supabase
       .from('user_profiles')
@@ -577,7 +808,9 @@ export class CreationService {
 
     if (error) {
       this.logger.error(`Unable to read creation journey: ${error.message}`);
-      throw new Error("Impossible de récupérer le parcours de création d'activité");
+      throw new Error(
+        "Impossible de récupérer le parcours de création d'activité",
+      );
     }
     if (!data) throw new NotFoundException('Profil utilisateur introuvable');
 
@@ -588,131 +821,56 @@ export class CreationService {
     userId: string,
     dto: UpdateCreationJourneyDto,
   ): Promise<CreationJourney> {
-    if (
-      !dto.situation &&
-      !dto.activite &&
-      !dto.marche &&
-      !dto.offre &&
-      !dto.statut
-    ) {
+    if (!journeySteps.some((step) => dto[step])) {
       throw new BadRequestException('Aucune étape à enregistrer');
     }
+
+    const validators: Record<
+      JourneyStep,
+      (input: JourneySection) => JourneySection
+    > = {
+      situation: (input) => this.validateSituation(input),
+      activite: (input) => this.validateActivite(input),
+      marche: (input) => this.validateMarche(input),
+      offre: (input) => this.validateOffre(input),
+      statut: (input) => this.validateStatut(input),
+      demarches: (input) => this.validateDemarches(input),
+      contacts: (input) => this.validateContacts(input),
+    };
+    const withoutConfirmation = (section: JourneySection | null) => {
+      if (!section) return null;
+      const copy = { ...section };
+      delete copy.isConfirmed;
+      return JSON.stringify(copy);
+    };
 
     const current = await this.getJourney(userId);
     const next: CreationJourney = { ...current };
 
-    if (dto.situation) {
-      next.situation = this.validateSituation(dto.situation);
-      // Revising step 1 invalidates step 2 confirmation because it may change
-      // the context used to choose the activity.
-      const revisedSituation = { ...dto.situation };
-      delete revisedSituation.isConfirmed;
-      const savedSituation = current.situation
-        ? { ...current.situation }
-        : null;
-      if (savedSituation) delete savedSituation.isConfirmed;
+    journeySteps.forEach((step, index) => {
+      const input = dto[step];
+      if (!input) return;
+      const previous = journeySteps[index - 1];
       if (
-        current.situation?.isConfirmed === true &&
-        JSON.stringify(revisedSituation) !== JSON.stringify(savedSituation)
+        previous &&
+        current[previous]?.isConfirmed !== true &&
+        next[previous]?.isConfirmed !== true
       ) {
-        next.activite = current.activite
-          ? { ...current.activite, isConfirmed: false }
-          : null;
-        next.marche = current.marche
-          ? { ...current.marche, isConfirmed: false }
-          : null;
-        next.offre = current.offre
-          ? { ...current.offre, isConfirmed: false }
-          : null;
-        next.statut = current.statut
-          ? { ...current.statut, isConfirmed: false }
-          : null;
+        throw new BadRequestException(missingPreviousStep[step]);
       }
-    }
-
-    if (dto.activite) {
-      if (current.situation?.isConfirmed !== true && next.situation?.isConfirmed !== true) {
-        throw new BadRequestException(
-          "L'étape 1 doit être confirmée avant de valider l'activité",
-        );
-      }
-      next.activite = this.validateActivite(dto.activite);
-      const revisedActivite = { ...dto.activite };
-      delete revisedActivite.isConfirmed;
-      const savedActivite = current.activite ? { ...current.activite } : null;
-      if (savedActivite) delete savedActivite.isConfirmed;
+      next[step] = validators[step](input);
+      // Revising a confirmed step reopens every later step, because they
+      // were built on the previous answers.
       if (
-        current.activite?.isConfirmed === true &&
-        JSON.stringify(revisedActivite) !== JSON.stringify(savedActivite)
+        current[step]?.isConfirmed === true &&
+        withoutConfirmation(input) !== withoutConfirmation(current[step])
       ) {
-        next.marche = current.marche
-          ? { ...current.marche, isConfirmed: false }
-          : null;
-        next.offre = current.offre
-          ? { ...current.offre, isConfirmed: false }
-          : null;
-        next.statut = current.statut
-          ? { ...current.statut, isConfirmed: false }
-          : null;
+        for (const later of journeySteps.slice(index + 1)) {
+          const saved = current[later];
+          next[later] = saved ? { ...saved, isConfirmed: false } : null;
+        }
       }
-    }
-
-    if (dto.marche) {
-      if (current.activite?.isConfirmed !== true && next.activite?.isConfirmed !== true) {
-        throw new BadRequestException(
-          "L'étape 2 doit être confirmée avant de valider l'étude de marché",
-        );
-      }
-      next.marche = this.validateMarche(dto.marche);
-      const revisedMarche = { ...dto.marche };
-      delete revisedMarche.isConfirmed;
-      const savedMarche = current.marche ? { ...current.marche } : null;
-      if (savedMarche) delete savedMarche.isConfirmed;
-      if (
-        current.marche?.isConfirmed === true &&
-        JSON.stringify(revisedMarche) !== JSON.stringify(savedMarche)
-      ) {
-        next.offre = current.offre
-          ? { ...current.offre, isConfirmed: false }
-          : null;
-        next.statut = current.statut
-          ? { ...current.statut, isConfirmed: false }
-          : null;
-      }
-    }
-
-    if (dto.offre) {
-      if (current.marche?.isConfirmed !== true && next.marche?.isConfirmed !== true) {
-        throw new BadRequestException(
-          "L'étape 3 doit être confirmée avant de valider l'offre et sa viabilité",
-        );
-      }
-      next.offre = this.validateOffre(dto.offre);
-      const revisedOffre = { ...dto.offre };
-      delete revisedOffre.isConfirmed;
-      const savedOffre = current.offre ? { ...current.offre } : null;
-      if (savedOffre) delete savedOffre.isConfirmed;
-      if (
-        current.offre?.isConfirmed === true &&
-        JSON.stringify(revisedOffre) !== JSON.stringify(savedOffre)
-      ) {
-        next.statut = current.statut
-          ? { ...current.statut, isConfirmed: false }
-          : null;
-      }
-    }
-
-    if (dto.statut) {
-      if (
-        current.offre?.isConfirmed !== true &&
-        next.offre?.isConfirmed !== true
-      ) {
-        throw new BadRequestException(
-          "L'étape 4 doit être confirmée avant de valider le statut",
-        );
-      }
-      next.statut = this.validateStatut(dto.statut);
-    }
+    });
 
     next.updatedAt = new Date().toISOString();
     const { data, error } = await this.supabase
@@ -724,7 +882,9 @@ export class CreationService {
 
     if (error) {
       this.logger.error(`Unable to save creation journey: ${error.message}`);
-      throw new Error("Impossible d'enregistrer le parcours de création d'activité");
+      throw new Error(
+        "Impossible d'enregistrer le parcours de création d'activité",
+      );
     }
     if (!data) throw new NotFoundException('Profil utilisateur introuvable');
 
@@ -739,6 +899,8 @@ export class CreationService {
       marche: this.asObjectOrNull(journey.marche),
       offre: this.asObjectOrNull(journey.offre),
       statut: this.asObjectOrNull(journey.statut),
+      demarches: this.asObjectOrNull(journey.demarches),
+      contacts: this.asObjectOrNull(journey.contacts),
       ...(typeof journey.updatedAt === 'string'
         ? { updatedAt: journey.updatedAt }
         : {}),
@@ -758,26 +920,56 @@ export class CreationService {
       'mobilityPreference',
       'isConfirmed',
     ]);
-    if (input.currentStatus !== undefined && !situationStatuses.includes(String(input.currentStatus))) {
+    if (
+      input.currentStatus !== undefined &&
+      !situationStatuses.includes(String(input.currentStatus))
+    ) {
       throw new BadRequestException('Situation professionnelle invalide');
     }
-    if (input.launchMode !== undefined && !launchModes.includes(String(input.launchMode))) {
+    if (
+      input.launchMode !== undefined &&
+      !launchModes.includes(String(input.launchMode))
+    ) {
       throw new BadRequestException('Mode de lancement invalide');
     }
     this.validateNumber(input.weeklyHours, 'weeklyHours', 0, 168);
-    this.validateNumber(input.monthlyIncomeGoal, 'monthlyIncomeGoal', 0, 1_000_000, true);
-    this.validateNumber(input.safeStartBudget, 'safeStartBudget', 0, 100_000_000, true);
+    this.validateNumber(
+      input.monthlyIncomeGoal,
+      'monthlyIncomeGoal',
+      0,
+      1_000_000,
+      true,
+    );
+    this.validateNumber(
+      input.safeStartBudget,
+      'safeStartBudget',
+      0,
+      100_000_000,
+      true,
+    );
     this.validateStringArray(input.strengths, 'strengths');
-    this.validateOptionalString(input.timeSlotsPreference, 'timeSlotsPreference');
+    this.validateOptionalString(
+      input.timeSlotsPreference,
+      'timeSlotsPreference',
+    );
     this.validateOptionalString(input.mobilityPreference, 'mobilityPreference');
     this.validateConfirmation(input.isConfirmed);
-    if (input.incomeNeededBy != null &&
-        (typeof input.incomeNeededBy !== 'string' || Number.isNaN(Date.parse(input.incomeNeededBy)))) {
+    if (
+      input.incomeNeededBy != null &&
+      (typeof input.incomeNeededBy !== 'string' ||
+        Number.isNaN(Date.parse(input.incomeNeededBy)))
+    ) {
       throw new BadRequestException('Date de besoin de revenus invalide');
     }
-    if (input.isConfirmed === true &&
-        (!input.currentStatus || input.weeklyHours === undefined || !input.launchMode)) {
-      throw new BadRequestException('Complétez votre situation avant de la confirmer');
+    if (
+      input.isConfirmed === true &&
+      (!input.currentStatus ||
+        input.weeklyHours === undefined ||
+        !input.launchMode)
+    ) {
+      throw new BadRequestException(
+        'Complétez votre situation avant de la confirmer',
+      );
     }
     return { ...input };
   }
@@ -802,22 +994,43 @@ export class CreationService {
         throw new BadRequestException(`Valeur invalide pour ${key}`);
       }
     }
-    if (input.hasAssociates !== undefined && input.hasAssociates !== null &&
-        typeof input.hasAssociates !== 'boolean') {
+    if (
+      input.hasAssociates !== undefined &&
+      input.hasAssociates !== null &&
+      typeof input.hasAssociates !== 'boolean'
+    ) {
       throw new BadRequestException('Valeur invalide pour hasAssociates');
     }
-    this.validateEnumArray(input.activityFamilies, 'activityFamilies', activityFamilies);
+    this.validateEnumArray(
+      input.activityFamilies,
+      'activityFamilies',
+      activityFamilies,
+    );
     this.validateOptionalEnum(input.targetType, 'targetType', targetTypes);
-    this.validateOptionalEnum(input.salesChannel, 'salesChannel', salesChannels);
+    this.validateOptionalEnum(
+      input.salesChannel,
+      'salesChannel',
+      salesChannels,
+    );
     for (const key of [
-      'ideaDescription', 'operatingArea', 'regulatoryNote',
-      'selectedSuggestionTitle', 'reasonsForChoice',
-    ]) this.validateOptionalString(input[key], key);
+      'ideaDescription',
+      'operatingArea',
+      'regulatoryNote',
+      'selectedSuggestionTitle',
+      'reasonsForChoice',
+    ])
+      this.validateOptionalString(input[key], key);
     this.validateConfirmation(input.isConfirmed);
-    if (input.isConfirmed === true &&
-        (typeof input.ideaDescription !== 'string' || !input.ideaDescription.trim() ||
-          !Array.isArray(input.activityFamilies) || input.activityFamilies.length === 0)) {
-      throw new BadRequestException("Ajoutez une description et une famille d'activité avant de confirmer");
+    if (
+      input.isConfirmed === true &&
+      (typeof input.ideaDescription !== 'string' ||
+        !input.ideaDescription.trim() ||
+        !Array.isArray(input.activityFamilies) ||
+        input.activityFamilies.length === 0)
+    ) {
+      throw new BadRequestException(
+        "Ajoutez une description et une famille d'activité avant de confirmer",
+      );
     }
     return { ...input };
   }
@@ -838,11 +1051,17 @@ export class CreationService {
       this.validateOptionalString(input[key], key);
     }
     this.validateOptionalEnum(input.testMethod, 'testMethod', testMethods);
-    this.validateOptionalEnum(input.marketDecision, 'marketDecision', marketDecisions);
-    if (input.targetTestCount !== undefined &&
-        (!Number.isInteger(input.targetTestCount) ||
-          (input.targetTestCount as number) < 1 ||
-          (input.targetTestCount as number) > 30)) {
+    this.validateOptionalEnum(
+      input.marketDecision,
+      'marketDecision',
+      marketDecisions,
+    );
+    if (
+      input.targetTestCount !== undefined &&
+      (!Number.isInteger(input.targetTestCount) ||
+        (input.targetTestCount as number) < 1 ||
+        (input.targetTestCount as number) > 30)
+    ) {
       throw new BadRequestException('Nombre de retours cible invalide');
     }
     for (const key of ['untestedAcknowledged', 'isConfirmed']) {
@@ -851,18 +1070,38 @@ export class CreationService {
       }
     }
     this.validateObjectArray(input.competitors, 'competitors', [
-      'name', 'offer', 'observedPrice', 'source', 'zone', 'observationDate', 'url',
+      'name',
+      'offer',
+      'observedPrice',
+      'source',
+      'zone',
+      'observationDate',
+      'url',
     ]);
-    this.validateObjectArray(input.feedbacks, 'feedbacks', [
-      'date', 'anonymizedProfile', 'expressedNeed', 'objections',
-      'priceReaction', 'nextStep', 'isPromising',
-    ], ['isPromising']);
-    if (input.isConfirmed === true &&
-        (typeof input.customerProblem !== 'string' ||
-          !input.customerProblem.trim() ||
-          typeof input.testMethod !== 'string' ||
-          input.targetTestCount === undefined)) {
-      throw new BadRequestException("Complétez votre plan de test avant de le confirmer");
+    this.validateObjectArray(
+      input.feedbacks,
+      'feedbacks',
+      [
+        'date',
+        'anonymizedProfile',
+        'expressedNeed',
+        'objections',
+        'priceReaction',
+        'nextStep',
+        'isPromising',
+      ],
+      ['isPromising'],
+    );
+    if (
+      input.isConfirmed === true &&
+      (typeof input.customerProblem !== 'string' ||
+        !input.customerProblem.trim() ||
+        typeof input.testMethod !== 'string' ||
+        input.targetTestCount === undefined)
+    ) {
+      throw new BadRequestException(
+        'Complétez votre plan de test avant de le confirmer',
+      );
     }
     return { ...input };
   }
@@ -916,29 +1155,78 @@ export class CreationService {
       }
     }
     this.validateNumber(input.proposedPrice, 'proposedPrice', 0, 100_000_000);
-    this.validateNumber(input.timePerDeliveryHours, 'timePerDeliveryHours', 0, 168);
-    this.validateNumber(input.targetMonthlyNetIncome, 'targetMonthlyNetIncome', 0, 1_000_000);
-    this.validateNumber(input.fixedMonthlyCosts, 'fixedMonthlyCosts', 0, 100_000_000, true);
-    this.validateOptionalEnum(input.variableCostModel, 'variableCostModel', variableCostModels);
-    this.validateNumber(input.variableCostValue, 'variableCostValue', 0, 100_000_000);
+    this.validateNumber(
+      input.timePerDeliveryHours,
+      'timePerDeliveryHours',
+      0,
+      168,
+    );
+    this.validateNumber(
+      input.targetMonthlyNetIncome,
+      'targetMonthlyNetIncome',
+      0,
+      1_000_000,
+    );
+    this.validateNumber(
+      input.fixedMonthlyCosts,
+      'fixedMonthlyCosts',
+      0,
+      100_000_000,
+      true,
+    );
+    this.validateOptionalEnum(
+      input.variableCostModel,
+      'variableCostModel',
+      variableCostModels,
+    );
+    this.validateNumber(
+      input.variableCostValue,
+      'variableCostValue',
+      0,
+      100_000_000,
+    );
     if (
       input.variableCostModel === 'ratioOfRevenue' &&
       typeof input.variableCostValue === 'number' &&
       input.variableCostValue > 1
     ) {
-      throw new BadRequestException('Le taux de coûts variables doit être compris entre 0 et 1');
+      throw new BadRequestException(
+        'Le taux de coûts variables doit être compris entre 0 et 1',
+      );
     }
     this.validateNumber(input.socialLevyRate, 'socialLevyRate', 0, 1);
-    this.validateNumber(input.monthlyBillableDays, 'monthlyBillableDays', 0, 31);
-    this.validateNumber(input.monthlyCapacityUnits, 'monthlyCapacityUnits', 0, 10_000);
-    this.validateNumber(input.initialStartupInvestment, 'initialStartupInvestment', 0, 100_000_000);
-    this.validateNumber(input.initialCashReserve, 'initialCashReserve', 0, 100_000_000);
+    this.validateNumber(
+      input.monthlyBillableDays,
+      'monthlyBillableDays',
+      0,
+      31,
+    );
+    this.validateNumber(
+      input.monthlyCapacityUnits,
+      'monthlyCapacityUnits',
+      0,
+      10_000,
+    );
+    this.validateNumber(
+      input.initialStartupInvestment,
+      'initialStartupInvestment',
+      0,
+      100_000_000,
+    );
+    this.validateNumber(
+      input.initialCashReserve,
+      'initialCashReserve',
+      0,
+      100_000_000,
+    );
     this.validateNumber(input.paymentDelayDays, 'paymentDelayDays', 0, 3_650);
     if (
       input.monthlyCapacityUnits !== undefined &&
       !Number.isInteger(input.monthlyCapacityUnits)
     ) {
-      throw new BadRequestException('Valeur invalide pour monthlyCapacityUnits');
+      throw new BadRequestException(
+        'Valeur invalide pour monthlyCapacityUnits',
+      );
     }
     if (
       input.paymentDelayDays !== undefined &&
@@ -950,9 +1238,12 @@ export class CreationService {
     this.validateConfirmation(input.isConfirmed);
     if (
       input.isConfirmed === true &&
-      [input.offerTitle, input.targetCustomer, input.coreProblem, input.keyBenefit].some(
-        (value) => typeof value !== 'string' || !value.trim(),
-      )
+      [
+        input.offerTitle,
+        input.targetCustomer,
+        input.coreProblem,
+        input.keyBenefit,
+      ].some((value) => typeof value !== 'string' || !value.trim())
     ) {
       throw new BadRequestException(
         'Complétez le nom de votre offre, sa cible, le problème et le bénéfice avant de confirmer',
@@ -1005,13 +1296,110 @@ export class CreationService {
     return { ...input };
   }
 
+  private validateDemarches(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, ['alreadyCreated', 'items', 'isConfirmed']);
+    for (const key of ['alreadyCreated', 'isConfirmed']) {
+      if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+        throw new BadRequestException(`Valeur invalide pour ${key}`);
+      }
+    }
+    this.validateObjectArray(
+      input.items,
+      'items',
+      [
+        'id',
+        'category',
+        'title',
+        'description',
+        'obligation',
+        'officialUrl',
+        'isCompleted',
+      ],
+      ['isCompleted'],
+    );
+    if (Array.isArray(input.items) && input.items.length > 40) {
+      throw new BadRequestException('Trop de démarches');
+    }
+    return { ...input };
+  }
+
+  private validateContacts(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, [
+      'selectedChannels',
+      'weeklyActionLimit',
+      'actions',
+      'results',
+      'announcementMessage',
+      'isConfirmed',
+    ]);
+    if (
+      input.isConfirmed !== undefined &&
+      typeof input.isConfirmed !== 'boolean'
+    ) {
+      throw new BadRequestException('Valeur de confirmation invalide');
+    }
+    this.validateStringArray(input.selectedChannels, 'selectedChannels');
+    this.validateOptionalString(
+      input.announcementMessage,
+      'announcementMessage',
+    );
+    this.validateNumber(input.weeklyActionLimit, 'weeklyActionLimit', 0, 50);
+    this.validateObjectArray(
+      input.actions,
+      'actions',
+      ['id', 'timeframe', 'channel', 'title', 'description', 'isCompleted'],
+      ['isCompleted'],
+    );
+    if (Array.isArray(input.actions) && input.actions.length > 40) {
+      throw new BadRequestException('Trop d’actions');
+    }
+    if (input.results !== undefined) {
+      if (
+        input.results === null ||
+        typeof input.results !== 'object' ||
+        Array.isArray(input.results)
+      ) {
+        throw new BadRequestException('Valeur invalide pour results');
+      }
+      const results = input.results as JourneySection;
+      this.rejectUnknownKeys(results, [
+        'qualifiedContactsCount',
+        'meetingsCount',
+        'offersSentCount',
+        'salesCount',
+        'collectedRevenue',
+        'notes',
+      ]);
+      for (const key of [
+        'qualifiedContactsCount',
+        'meetingsCount',
+        'offersSentCount',
+        'salesCount',
+      ]) {
+        this.validateNumber(results[key], `results.${key}`, 0, 100_000);
+      }
+      this.validateNumber(
+        results.collectedRevenue,
+        'results.collectedRevenue',
+        0,
+        100_000_000,
+      );
+      this.validateOptionalString(results.notes, 'results.notes');
+    }
+    return { ...input };
+  }
+
   private validateEconomicScenarios(value: unknown) {
     if (value === undefined) return;
     if (!Array.isArray(value) || value.length > 10) {
       throw new BadRequestException('Valeur invalide pour scenarios');
     }
     for (const scenario of value) {
-      if (scenario === null || typeof scenario !== 'object' || Array.isArray(scenario)) {
+      if (
+        scenario === null ||
+        typeof scenario !== 'object' ||
+        Array.isArray(scenario)
+      ) {
         throw new BadRequestException('Valeur invalide pour scenarios');
       }
       const entry = scenario as Record<string, unknown>;
@@ -1025,14 +1413,26 @@ export class CreationService {
         throw new BadRequestException('Valeur invalide pour scenarios.name');
       }
       this.validateNumber(entry.price, 'scenarios.price', 0, 100_000_000);
-      this.validateNumber(entry.volumeMonthly, 'scenarios.volumeMonthly', 0, 1_000_000);
-      this.validateNumber(entry.paymentDelayDays, 'scenarios.paymentDelayDays', 0, 3_650);
+      this.validateNumber(
+        entry.volumeMonthly,
+        'scenarios.volumeMonthly',
+        0,
+        1_000_000,
+      );
+      this.validateNumber(
+        entry.paymentDelayDays,
+        'scenarios.paymentDelayDays',
+        0,
+        3_650,
+      );
       if (entry.price === undefined || entry.volumeMonthly === undefined) {
         throw new BadRequestException('Scénario économique incomplet');
       }
       for (const key of ['volumeMonthly', 'paymentDelayDays']) {
         if (entry[key] !== undefined && !Number.isInteger(entry[key])) {
-          throw new BadRequestException(`Valeur invalide pour scenarios.${key}`);
+          throw new BadRequestException(
+            `Valeur invalide pour scenarios.${key}`,
+          );
         }
       }
     }
@@ -1041,7 +1441,9 @@ export class CreationService {
   private rejectUnknownKeys(input: JourneySection, allowed: string[]) {
     const unknown = Object.keys(input).filter((key) => !allowed.includes(key));
     if (unknown.length) {
-      throw new BadRequestException(`Champ(s) non pris en charge: ${unknown.join(', ')}`);
+      throw new BadRequestException(
+        `Champ(s) non pris en charge: ${unknown.join(', ')}`,
+      );
     }
   }
 
@@ -1053,8 +1455,13 @@ export class CreationService {
     nullable = false,
   ) {
     if (value === null && nullable) return;
-    if (value !== undefined &&
-        (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum)) {
+    if (
+      value !== undefined &&
+      (typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        value < minimum ||
+        value > maximum)
+    ) {
       throw new BadRequestException(`Valeur invalide pour ${field}`);
     }
   }
@@ -1066,14 +1473,22 @@ export class CreationService {
   }
 
   private validateStringArray(value: unknown, field: string) {
-    if (value !== undefined && (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))) {
+    if (
+      value !== undefined &&
+      (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))
+    ) {
       throw new BadRequestException(`Valeur invalide pour ${field}`);
     }
   }
 
   private validateEnumArray(value: unknown, field: string, allowed: string[]) {
-    if (value !== undefined &&
-        (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !allowed.includes(item)))) {
+    if (
+      value !== undefined &&
+      (!Array.isArray(value) ||
+        value.some(
+          (item) => typeof item !== 'string' || !allowed.includes(item),
+        ))
+    ) {
       throw new BadRequestException(`Valeur invalide pour ${field}`);
     }
   }
@@ -1097,7 +1512,9 @@ export class CreationService {
       for (const [key, entry] of Object.entries(record)) {
         if (booleanKeys.includes(key)) {
           if (typeof entry !== 'boolean') {
-            throw new BadRequestException(`Valeur invalide pour ${field}.${key}`);
+            throw new BadRequestException(
+              `Valeur invalide pour ${field}.${key}`,
+            );
           }
         } else if (typeof entry !== 'string') {
           throw new BadRequestException(`Valeur invalide pour ${field}.${key}`);
@@ -1106,9 +1523,16 @@ export class CreationService {
     }
   }
 
-  private validateOptionalEnum(value: unknown, field: string, allowed: string[]) {
-    if (value !== undefined && value !== null &&
-        (typeof value !== 'string' || !allowed.includes(value))) {
+  private validateOptionalEnum(
+    value: unknown,
+    field: string,
+    allowed: string[],
+  ) {
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== 'string' || !allowed.includes(value))
+    ) {
       throw new BadRequestException(`Valeur invalide pour ${field}`);
     }
   }

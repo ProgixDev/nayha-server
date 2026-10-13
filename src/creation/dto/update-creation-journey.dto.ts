@@ -21,4 +21,12 @@ export class UpdateCreationJourneyDto {
   @IsOptional()
   @IsObject()
   statut?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  demarches?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsObject()
+  contacts?: Record<string, unknown>;
 }
