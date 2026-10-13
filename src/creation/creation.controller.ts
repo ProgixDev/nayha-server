@@ -33,4 +33,10 @@ export class CreationController {
   coach(@CurrentUser() user: AuthUser, @Body() dto: CreationCoachMessageDto) {
     return this.creationService.coach(user.id, dto);
   }
+
+  /** Generate activity ideas from the user's completed diagnostics. */
+  @Post('activity-suggestions')
+  activitySuggestions(@CurrentUser() user: AuthUser) {
+    return this.creationService.generateActivitySuggestions(user.id);
+  }
 }

@@ -136,6 +136,126 @@ export class CreationService {
     }
   }
 
+  async generateActivitySuggestions(userId: string) {
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('diagnostic_vie_data, diagnostic_pro_data, creation_journey')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      this.logger.error(
+        `Unable to load diagnostics for activity ideas: ${error.message}`,
+      );
+      throw new ServiceUnavailableException(
+        'Les diagnostics ne sont pas disponibles pour le moment.',
+      );
+    }
+    if (!profile) throw new NotFoundException('Profil utilisateur introuvable');
+
+    const diagnosticVie = profile.diagnostic_vie_data as Record<string, unknown> | null;
+    const diagnosticPro = profile.diagnostic_pro_data as Record<string, unknown> | null;
+    if (!diagnosticVie && !diagnosticPro) {
+      throw new BadRequestException(
+        'Complète au moins un diagnostic pour recevoir des pistes personnalisées.',
+      );
+    }
+
+    // The diagnostics provide the person's background; direct identifiers
+    // aren't needed to suggest an activity.
+    const personalFields = new Set(['name', 'nom', 'prenom', 'firstName', 'lastName']);
+    const withoutIdentity = (data: Record<string, unknown> | null) => {
+      if (!data) return null;
+      return Object.fromEntries(
+        Object.entries(data).filter(([key]) => !personalFields.has(key)),
+      );
+    };
+    const journey = (profile.creation_journey ?? {}) as {
+      situation?: Record<string, unknown> | null;
+    };
+    const context = {
+      diagnosticVie: withoutIdentity(diagnosticVie),
+      diagnosticPro: withoutIdentity(diagnosticPro),
+      situationCreation: journey.situation ?? null,
+    };
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.7,
+        max_tokens: 1800,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              `Tu aides une personne en France à imaginer une activité indépendante réaliste à partir de ses diagnostics de vie et professionnel. ` +
+              `Ancre chaque proposition dans ses compétences, expériences, intérêts, motivations et contraintes effectivement renseignés. ` +
+              `Ne répète pas une donnée personnelle sensible et ne déduis pas de capacité à partir de l'âge ou d'une situation familiale. ` +
+              `Propose exactement 5 pistes distinctes, concrètes et accessibles à explorer; diversifie les formats seulement s'ils correspondent au profil. ` +
+              `N'invente ni diplôme, ni expérience, ni obligation réglementaire. Si une activité peut être réglementée, précise qu'il faut vérifier les conditions officielles. ` +
+              `Réponds uniquement en JSON avec cette forme: {"suggestions":[{"label":"libellé court de 2 à 5 mots pour une puce","title":"nom concret de l'activité","category":"thématique courte","subtitle":"description en une phrase","whyThisFits":"lien explicite avec un élément du diagnostic","family":"service|artisanat|produit|commerceLocal|digital","target":"b2c|b2b|mixte","channel":"local|enLigne|mixte","tasks":"missions concrètes","public":"clientèle visée","resources":"moyens de départ","constraints":"contrainte ou point de vigilance","prereq":"formation ou vérification nécessaire, ou aucun prérequis particulier identifié","isRegulated":false}]}. ` +
+              `Écris en français, tutoie, reste encourageante et prudente.`,
+          },
+          {
+            role: 'user',
+            content: `Diagnostics et situation de création : ${JSON.stringify(context).slice(0, 16000)}`,
+          },
+        ],
+      });
+
+      const content = completion.choices[0]?.message?.content?.trim();
+      if (!content) throw new Error('OpenAI returned empty activity suggestions');
+      const parsed = JSON.parse(content) as { suggestions?: unknown };
+      if (!Array.isArray(parsed.suggestions) || parsed.suggestions.length === 0) {
+        throw new Error('OpenAI returned no activity suggestions');
+      }
+
+      const text = (value: unknown, maxLength: number) =>
+        typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+      const allowedFamilies = new Set(activityFamilies);
+      const allowedTargets = new Set(targetTypes);
+      const allowedChannels = new Set(salesChannels);
+      const suggestions = parsed.suggestions.slice(0, 5).map((value) => {
+        if (typeof value !== 'object' || value === null) {
+          throw new Error('OpenAI returned an invalid activity suggestion');
+        }
+        const suggestion = value as Record<string, unknown>;
+        const family = text(suggestion.family, 40);
+        const target = text(suggestion.target, 20);
+        const channel = text(suggestion.channel, 20);
+        const normalized = {
+          label: text(suggestion.label, 48),
+          title: text(suggestion.title, 100),
+          category: text(suggestion.category, 48),
+          subtitle: text(suggestion.subtitle, 180),
+          whyThisFits: text(suggestion.whyThisFits, 180),
+          family: allowedFamilies.has(family) ? family : 'service',
+          target: allowedTargets.has(target) ? target : 'mixte',
+          channel: allowedChannels.has(channel) ? channel : 'mixte',
+          tasks: text(suggestion.tasks, 240),
+          public: text(suggestion.public, 160),
+          resources: text(suggestion.resources, 160),
+          constraints: text(suggestion.constraints, 180),
+          prereq: text(suggestion.prereq, 180),
+          isRegulated: suggestion.isRegulated === true,
+        };
+        if (!normalized.label || !normalized.title || !normalized.category) {
+          throw new Error('OpenAI returned an incomplete activity suggestion');
+        }
+        return normalized;
+      });
+
+      return { suggestions };
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(`Activity suggestion generation failed: ${detail}`);
+      throw new ServiceUnavailableException(
+        'Les pistes personnalisées sont momentanément indisponibles. Réessaie dans un instant.',
+      );
+    }
+  }
+
   async getJourney(userId: string): Promise<CreationJourney> {
     const { data, error } = await this.supabase
       .from('user_profiles')
