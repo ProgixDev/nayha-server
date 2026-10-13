@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import {
   isPremiumProfile,
   SUBSCRIPTION_COLUMNS,
@@ -18,7 +19,10 @@ export class UsersService {
   private readonly logger = new Logger(UsersService.name);
   private supabase: SupabaseClient;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private readonly subscriptionsService: SubscriptionsService,
+  ) {
     this.supabase = createClient(
       this.configService.get<string>('SUPABASE_URL')!,
       this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -528,6 +532,14 @@ export class UsersService {
           `Account deletion: removing files failed for user ${userId}: ${removeError.message}`,
         );
       }
+    }
+
+    try {
+      await this.subscriptionsService.deleteCustomer(userId);
+    } catch (cause) {
+      this.logger.error(
+        `Account deletion: RevenueCat cleanup failed for user ${userId}: ${String(cause)}`,
+      );
     }
 
     this.logger.log(`Account deleted for user ${userId}`);
