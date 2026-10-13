@@ -25,10 +25,6 @@ export class UpdateProfileDto {
   metier_selected?: boolean;
 
   @IsOptional()
-  @IsBoolean()
-  has_paid?: boolean;
-
-  @IsOptional()
   @IsString()
   selected_metier_id?: string;
 
@@ -91,14 +87,6 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsInt()
   actions_semaine_count?: number;
-
-  @IsOptional()
-  @IsString()
-  subscription_tier?: string;
-
-  @IsOptional()
-  @IsString()
-  subscription_status?: string;
 
   @IsOptional()
   @IsString()

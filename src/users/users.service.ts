@@ -91,7 +91,6 @@ export class UsersService {
       diagnostic_pro_completed?: boolean;
       rgpd_accepted?: boolean;
       metier_selected?: boolean;
-      has_paid?: boolean;
       selected_metier_id?: string;
       selected_metier_titre?: string;
       selected_metier_certification_required?: string;
@@ -109,10 +108,6 @@ export class UsersService {
       creation_interest?: string;
       ateliers_emploi_watched?: string[];
       actions_semaine_count?: number;
-      subscription_tier?: string;
-      subscription_status?: string;
-      subscription_started_at?: string;
-      subscription_expires_at?: string;
       avatar_url?: string | null;
     },
   ) {
@@ -138,18 +133,6 @@ export class UsersService {
       }
     }
 
-    // Auto-set subscription fields when has_paid is activated
-    if (enriched.has_paid === true) {
-      const now = new Date();
-      const expiresAt = new Date(now);
-      expiresAt.setDate(expiresAt.getDate() + 30);
-
-      enriched.subscription_tier = enriched.subscription_tier || 'standard';
-      enriched.subscription_status = 'active';
-      enriched.subscription_started_at = now.toISOString();
-      enriched.subscription_expires_at = expiresAt.toISOString();
-    }
-
     // CV templates other than "classique" and custom accent colours are
     // reserved to Premium.
     const cvTemplate: unknown = enriched.cv_identity?.template;
@@ -157,7 +140,7 @@ export class UsersService {
     const usesPremiumStyle =
       (typeof cvTemplate === 'string' && cvTemplate !== 'classique') ||
       (typeof cvAccent === 'string' && cvAccent !== '');
-    if (usesPremiumStyle && !(await this.isPremium(userId, enriched))) {
+    if (usesPremiumStyle && !(await this.isPremium(userId))) {
       enriched.cv_identity = {
         ...enriched.cv_identity,
         template: 'classique',
@@ -369,16 +352,13 @@ export class UsersService {
     return { success: true, updated_at: now };
   }
 
-  private async isPremium(
-    userId: string,
-    pending: SubscriptionFields,
-  ): Promise<boolean> {
+  private async isPremium(userId: string): Promise<boolean> {
     const { data } = await this.supabase
       .from('user_profiles')
       .select(SUBSCRIPTION_COLUMNS)
       .eq('id', userId)
       .maybeSingle<SubscriptionFields>();
-    return isPremiumProfile({ ...data, ...pending });
+    return !!data && isPremiumProfile(data);
   }
 
   uploadAvatar(userId: string, fileBuffer: Buffer, mimeType: string) {
@@ -398,7 +378,7 @@ export class UsersService {
   }
 
   async uploadCvSignature(userId: string, fileBuffer: Buffer) {
-    if (!(await this.isPremium(userId, {}))) {
+    if (!(await this.isPremium(userId))) {
       throw new ForbiddenException('La signature est réservée au Premium');
     }
     return this.uploadProfileImage(userId, fileBuffer, 'image/png', {
