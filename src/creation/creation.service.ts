@@ -10,6 +10,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
+import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 type JourneySection = Record<string, unknown>;
@@ -18,6 +19,7 @@ export interface CreationJourney {
   activite: JourneySection | null;
   marche: JourneySection | null;
   offre: JourneySection | null;
+  statut: JourneySection | null;
   updatedAt?: string;
 }
 
@@ -48,6 +50,15 @@ const testMethods = [
 ];
 const marketDecisions = ['continueTest', 'adjustOffer', 'otherIdea', 'pause'];
 const variableCostModels = ['ratioOfRevenue', 'perUnit'];
+const frameworkTypes = [
+  'microEntreprise',
+  'couveuseCae',
+  'portageSalarial',
+  'societeUnipersonnelle',
+];
+const fundingStatuses = ['aVerifier', 'enCours', 'confirme', 'nonConcerne'];
+const offerFormats = ['presentiel', 'enLigne', 'hybride', 'produit'];
+const microActivityKinds = ['vente', 'service', 'liberal'];
 
 @Injectable()
 export class CreationService {
@@ -341,7 +352,7 @@ export class CreationService {
             role: 'system',
             content:
               `Tu aides une personne qui débute dans la création d'activité en France à préparer l'étude de son marché. Elle n'a aucune connaissance en marketing. ` +
-              `À partir de son idée, propose des points de départ simples qu'elle pourra corriger. Utilise des mots du quotidien, sans jargon (pas de "persona", "B2B", "segment", "lead"). ` +
+              `À partir de son idée, propose des points de départ simples qu'elle pourra corriger. Utilise des mots du quotidien, sans jargon (pas de "persona", "B2B", "segment", "lead"). Tutoie la personne dans "problems", "places" et "alternatives" ; seules les "questions" sont au vouvoiement. ` +
               `"problems": 3 formulations différentes du problème que vivent ses futurs clients, chacune en une phrase courte qui dit qui, dans quelle situation et ce qui est difficile. Décris le problème, pas la solution. ` +
               `"places": 5 endroits concrets, en ligne ou près de chez elle, où rencontrer ces personnes pour leur parler (label de 2 à 5 mots, detail d'une phrase). Adapte-les au canal et à la zone indiqués. ` +
               `"alternatives": 3 types de solutions que ces personnes utilisent déjà aujourd'hui (concurrents, solutions gratuites ou « faire soi-même »). Donne des types génériques, jamais de nom d'entreprise. "typicalPrice" donne un ordre de prix courant en France si tu le connais, sinon une chaîne vide. ` +
@@ -406,6 +417,110 @@ export class CreationService {
     }
   }
 
+  async generateOfferStarter(userId: string, dto: CreationOfferStarterDto) {
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('creation_journey')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(
+        `Unable to load offer starter context: ${error.message}`,
+      );
+    }
+
+    const journey = (profile?.creation_journey ?? {}) as {
+      situation?: Record<string, unknown> | null;
+      activite?: Record<string, unknown> | null;
+      marche?: Record<string, unknown> | null;
+    };
+    const activite = dto.activite ?? journey.activite ?? null;
+    if (
+      typeof activite?.ideaDescription !== 'string' ||
+      !activite.ideaDescription.trim()
+    ) {
+      throw new BadRequestException(
+        "Décris d'abord ton idée d'activité à l'étape 2.",
+      );
+    }
+    const context = {
+      situation: dto.situation ?? journey.situation ?? null,
+      activite,
+      marche: dto.marche ?? journey.marche ?? null,
+    };
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.4,
+        max_tokens: 900,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              `Tu aides une personne qui débute dans la création d'activité en France à rédiger sa première offre. Elle ne connaît ni le marketing ni la gestion. ` +
+              `Pars de son idée, de son public, du problème décrit et des retours de terrain fournis. Écris avec des mots simples, en tutoyant, sans jargon ni superlatifs. ` +
+              `"offerTitle": nom concret de l'offre en 3 à 7 mots. "targetCustomer": le public précis en quelques mots, en minuscules (ex: "parents actifs de jeunes enfants"). ` +
+              `"keyBenefit": ce que le client gagne, commençant par un verbe à l'infinitif, en minuscules (ex: "retrouver du temps le soir"). ` +
+              `"offerContent": ce que le client reçoit concrètement (durée, quantité, format). ` +
+              `"offerFormat": une valeur parmi presentiel, enLigne, hybride, produit. ` +
+              `"activityKind": vente si elle vend surtout des produits, service si c'est une prestation artisanale ou commerciale, liberal si c'est du conseil, de l'accompagnement, de la formation ou une activité intellectuelle. ` +
+              `"priceLow" et "priceHigh": fourchette de prix courante en France pour une offre comparable, en euros, nombres entiers. Tiens compte des prix observés dans les retours et la concurrence s'ils existent. "priceUnit": l'unité (ex: "par séance", "par pièce", "par mois"). "priceRationale": une phrase qui explique d'où vient la fourchette. ` +
+              `"timePerSaleHours": temps de travail réaliste pour une vente, préparation comprise, en heures (nombre). "monthlyFixedCosts": frais fixes mensuels typiques pour démarrer petit (assurance, outils, téléphone), en euros. ` +
+              `Ne promets pas de résultat et n'invente pas de chiffre de marché. ` +
+              `Réponds uniquement en JSON: {"offerTitle":"","targetCustomer":"","keyBenefit":"","offerContent":"","offerFormat":"","activityKind":"","priceLow":0,"priceHigh":0,"priceUnit":"","priceRationale":"","timePerSaleHours":0,"monthlyFixedCosts":0}`,
+          },
+          {
+            role: 'user',
+            content: `Contexte du projet : ${JSON.stringify(context).slice(0, 8000)}`,
+          },
+        ],
+      });
+
+      const content = completion.choices[0]?.message?.content?.trim();
+      if (!content) throw new Error('OpenAI returned an empty offer starter');
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const text = (value: unknown, maxLength: number) =>
+        typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+      const amount = (value: unknown, max: number) =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0
+          ? Math.min(Math.round(value * 10) / 10, max)
+          : 0;
+      const offerFormat = text(parsed.offerFormat, 20);
+      const activityKind = text(parsed.activityKind, 20);
+      const priceLow = amount(parsed.priceLow, 100_000);
+      const priceHigh = Math.max(amount(parsed.priceHigh, 100_000), priceLow);
+
+      const starter = {
+        offerTitle: text(parsed.offerTitle, 100),
+        targetCustomer: text(parsed.targetCustomer, 120),
+        keyBenefit: text(parsed.keyBenefit, 180),
+        offerContent: text(parsed.offerContent, 240),
+        offerFormat: offerFormats.includes(offerFormat) ? offerFormat : '',
+        activityKind: microActivityKinds.includes(activityKind)
+          ? activityKind
+          : 'service',
+        priceLow,
+        priceHigh,
+        priceUnit: text(parsed.priceUnit, 40),
+        priceRationale: text(parsed.priceRationale, 220),
+        timePerSaleHours: amount(parsed.timePerSaleHours, 80),
+        monthlyFixedCosts: amount(parsed.monthlyFixedCosts, 10_000),
+      };
+      if (!starter.offerTitle || !starter.keyBenefit) {
+        throw new Error('OpenAI returned an incomplete offer starter');
+      }
+      return starter;
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(`Offer starter generation failed: ${detail}`);
+      throw new ServiceUnavailableException(
+        'Les propositions de NAYHA sont momentanément indisponibles. Tu peux remplir ton offre avec tes mots.',
+      );
+    }
+  }
+
   async getJourney(userId: string): Promise<CreationJourney> {
     const { data, error } = await this.supabase
       .from('user_profiles')
@@ -426,7 +541,13 @@ export class CreationService {
     userId: string,
     dto: UpdateCreationJourneyDto,
   ): Promise<CreationJourney> {
-    if (!dto.situation && !dto.activite && !dto.marche && !dto.offre) {
+    if (
+      !dto.situation &&
+      !dto.activite &&
+      !dto.marche &&
+      !dto.offre &&
+      !dto.statut
+    ) {
       throw new BadRequestException('Aucune étape à enregistrer');
     }
 
@@ -456,6 +577,9 @@ export class CreationService {
         next.offre = current.offre
           ? { ...current.offre, isConfirmed: false }
           : null;
+        next.statut = current.statut
+          ? { ...current.statut, isConfirmed: false }
+          : null;
       }
     }
 
@@ -480,6 +604,9 @@ export class CreationService {
         next.offre = current.offre
           ? { ...current.offre, isConfirmed: false }
           : null;
+        next.statut = current.statut
+          ? { ...current.statut, isConfirmed: false }
+          : null;
       }
     }
 
@@ -501,6 +628,9 @@ export class CreationService {
         next.offre = current.offre
           ? { ...current.offre, isConfirmed: false }
           : null;
+        next.statut = current.statut
+          ? { ...current.statut, isConfirmed: false }
+          : null;
       }
     }
 
@@ -511,6 +641,30 @@ export class CreationService {
         );
       }
       next.offre = this.validateOffre(dto.offre);
+      const revisedOffre = { ...dto.offre };
+      delete revisedOffre.isConfirmed;
+      const savedOffre = current.offre ? { ...current.offre } : null;
+      if (savedOffre) delete savedOffre.isConfirmed;
+      if (
+        current.offre?.isConfirmed === true &&
+        JSON.stringify(revisedOffre) !== JSON.stringify(savedOffre)
+      ) {
+        next.statut = current.statut
+          ? { ...current.statut, isConfirmed: false }
+          : null;
+      }
+    }
+
+    if (dto.statut) {
+      if (
+        current.offre?.isConfirmed !== true &&
+        next.offre?.isConfirmed !== true
+      ) {
+        throw new BadRequestException(
+          "L'étape 4 doit être confirmée avant de valider le statut",
+        );
+      }
+      next.statut = this.validateStatut(dto.statut);
     }
 
     next.updatedAt = new Date().toISOString();
@@ -537,6 +691,7 @@ export class CreationService {
       activite: this.asObjectOrNull(journey.activite),
       marche: this.asObjectOrNull(journey.marche),
       offre: this.asObjectOrNull(journey.offre),
+      statut: this.asObjectOrNull(journey.statut),
       ...(typeof journey.updatedAt === 'string'
         ? { updatedAt: journey.updatedAt }
         : {}),
@@ -756,6 +911,50 @@ export class CreationService {
         'Complétez le nom de votre offre, sa cible, le problème et le bénéfice avant de confirmer',
       );
     }
+    return { ...input };
+  }
+
+  private validateStatut(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, [
+      'chosenFramework',
+      'hasChosenFramework',
+      'frameworkReason',
+      'areRightsOpen',
+      'fundingItems',
+      'initialPersonalContribution',
+      'isConfirmed',
+    ]);
+    this.validateOptionalEnum(
+      input.chosenFramework,
+      'chosenFramework',
+      frameworkTypes,
+    );
+    for (const key of ['hasChosenFramework', 'areRightsOpen', 'isConfirmed']) {
+      if (input[key] !== undefined && typeof input[key] !== 'boolean') {
+        throw new BadRequestException(`Valeur invalide pour ${key}`);
+      }
+    }
+    this.validateOptionalString(input.frameworkReason, 'frameworkReason');
+    this.validateObjectArray(input.fundingItems, 'fundingItems', [
+      'name',
+      'description',
+      'potentialAmount',
+      'officialUrl',
+      'status',
+    ]);
+    for (const item of (input.fundingItems as JourneySection[]) ?? []) {
+      this.validateOptionalEnum(
+        item.status,
+        'fundingItems.status',
+        fundingStatuses,
+      );
+    }
+    this.validateNumber(
+      input.initialPersonalContribution,
+      'initialPersonalContribution',
+      0,
+      100_000_000,
+    );
     return { ...input };
   }
 

@@ -7,6 +7,7 @@ import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import { CreationService } from './creation.service';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
+import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 @Controller('creation')
@@ -48,5 +49,14 @@ export class CreationController {
     @Body() dto: CreationMarketStarterDto,
   ) {
     return this.creationService.generateMarketStarter(user.id, dto);
+  }
+
+  /** Draft the step 4 offer and a realistic price range from steps 1 to 3. */
+  @Post('offer-starter')
+  offerStarter(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationOfferStarterDto,
+  ) {
+    return this.creationService.generateOfferStarter(user.id, dto);
   }
 }
