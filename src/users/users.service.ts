@@ -137,6 +137,19 @@ export class UsersService {
       }
     }
 
+    // Record when consent was first given, so the person can see it.
+    if (updates.rgpd_accepted === true) {
+      const { data: consent } = await this.supabase
+        .from('user_profiles')
+        .select('rgpd_accepted_at')
+        .eq('id', userId)
+        .maybeSingle<{ rgpd_accepted_at: string | null }>();
+      if (!consent?.rgpd_accepted_at) {
+        (enriched as Record<string, unknown>).rgpd_accepted_at =
+          new Date().toISOString();
+      }
+    }
+
     // CV templates other than "classique" and custom accent colours are
     // reserved to Premium.
     const cvTemplate: unknown = enriched.cv_identity?.template;
