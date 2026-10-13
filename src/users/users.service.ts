@@ -231,14 +231,14 @@ export class UsersService {
       // 1. Fetch all Auth users
       const { data: authData, error: authError } =
         await this.supabase.auth.admin.listUsers();
-      const authUsers = (!authError && authData?.users) ? authData.users : [];
+      const authUsers = !authError && authData?.users ? authData.users : [];
 
       // 2. Fetch all Profiles
       const { data: profiles, error: profileError } = await this.supabase
         .from('user_profiles')
         .select('*')
         .order('created_at', { ascending: false });
-      const profileList = (!profileError && profiles) ? profiles : [];
+      const profileList = !profileError && profiles ? profiles : [];
 
       // 3. Fetch Candidatures count per user
       const { data: candidatures } = await this.supabase
@@ -270,18 +270,14 @@ export class UsersService {
         seenIds.add(authUser.id);
         const profile = profileMap.get(authUser.id) || {};
         const candidaturesCount = candidaturesCountMap.get(authUser.id) || 0;
-        mergedUsers.push(
-          this.mapUser(authUser, profile, candidaturesCount),
-        );
+        mergedUsers.push(this.mapUser(authUser, profile, candidaturesCount));
       }
 
       // Add any orphaned profiles not in auth users
       for (const profile of profileList) {
         if (!seenIds.has(profile.id)) {
           const candidaturesCount = candidaturesCountMap.get(profile.id) || 0;
-          mergedUsers.push(
-            this.mapUser(null, profile, candidaturesCount),
-          );
+          mergedUsers.push(this.mapUser(null, profile, candidaturesCount));
         }
       }
 
@@ -321,7 +317,11 @@ export class UsersService {
     try {
       const [authRes, profileRes, candidaturesRes] = await Promise.all([
         this.supabase.auth.admin.getUserById(id),
-        this.supabase.from('user_profiles').select('*').eq('id', id).maybeSingle(),
+        this.supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', id)
+          .maybeSingle(),
         this.supabase.from('candidatures').select('id').eq('user_id', id),
       ]);
 
@@ -481,10 +481,77 @@ export class UsersService {
       .single();
 
     if (error) {
-      throw new InternalServerErrorException('Échec de la mise à jour du profil');
+      throw new InternalServerErrorException(
+        'Échec de la mise à jour du profil',
+      );
     }
 
     return data;
+  }
+
+  /**
+   * Right to erasure: removes the account and everything tied to it.
+   * The auth user goes first so a failure leaves the account intact and the
+   * person can simply retry; the cleanup after it is best effort and logged.
+   */
+  async deleteAccount(userId: string): Promise<{ deleted: true }> {
+    const { error: authError } =
+      await this.supabase.auth.admin.deleteUser(userId);
+    if (authError) {
+      this.logger.error(
+        `Account deletion failed for user ${userId}: ${authError.message}`,
+      );
+      throw new InternalServerErrorException(
+        'Impossible de supprimer ton compte pour le moment. Réessaie dans un instant.',
+      );
+    }
+
+    // Tables referencing auth.users cascade on their own. These ones are
+    // either created outside the migrations or have no foreign key.
+    const cleanups: Array<[string, PromiseLike<{ error: unknown }>]> = [
+      [
+        'user_profiles',
+        this.supabase.from('user_profiles').delete().eq('id', userId),
+      ],
+      [
+        'atelier_views',
+        this.supabase.from('atelier_views').delete().eq('user_id', userId),
+      ],
+      [
+        'blog_views',
+        this.supabase.from('blog_views').delete().eq('user_id', userId),
+      ],
+    ];
+    for (const [table, request] of cleanups) {
+      const { error } = await request;
+      if (error) {
+        this.logger.error(
+          `Account deletion: ${table} cleanup failed for user ${userId}`,
+        );
+      }
+    }
+
+    const bucket = this.supabase.storage.from('avatars');
+    const { data: files, error: listError } = await bucket.list(userId, {
+      limit: 1000,
+    });
+    if (listError) {
+      this.logger.error(
+        `Account deletion: listing files failed for user ${userId}: ${listError.message}`,
+      );
+    } else if (files?.length) {
+      const { error: removeError } = await bucket.remove(
+        files.map((file) => `${userId}/${file.name}`),
+      );
+      if (removeError) {
+        this.logger.error(
+          `Account deletion: removing files failed for user ${userId}: ${removeError.message}`,
+        );
+      }
+    }
+
+    this.logger.log(`Account deleted for user ${userId}`);
+    return { deleted: true };
   }
 
   async deleteAvatar(userId: string) {
@@ -496,7 +563,9 @@ export class UsersService {
       .single();
 
     if (error) {
-      throw new InternalServerErrorException('Échec de la suppression de la photo');
+      throw new InternalServerErrorException(
+        'Échec de la suppression de la photo',
+      );
     }
 
     return data;
@@ -505,7 +574,10 @@ export class UsersService {
   private formatUserName(meta: any, rawProfile?: any, email?: string): string {
     // 1. Check diagnostic answers or CV name if user completed them
     if (rawProfile?.diagnostic_vie_data) {
-      const pFirst = rawProfile.diagnostic_vie_data.name || rawProfile.diagnostic_vie_data.prenom || '';
+      const pFirst =
+        rawProfile.diagnostic_vie_data.name ||
+        rawProfile.diagnostic_vie_data.prenom ||
+        '';
       const pLast = rawProfile.diagnostic_vie_data.nom || '';
       const pName = `${pFirst} ${pLast}`.trim();
       if (pName) return pName;
@@ -520,7 +592,11 @@ export class UsersService {
 
     // 2. Check Auth user metadata
     if (meta) {
-      if (meta.full_name && typeof meta.full_name === 'string' && meta.full_name.trim()) {
+      if (
+        meta.full_name &&
+        typeof meta.full_name === 'string' &&
+        meta.full_name.trim()
+      ) {
         return meta.full_name.trim();
       }
       if (meta.name && typeof meta.name === 'string' && meta.name.trim()) {
@@ -555,16 +631,13 @@ export class UsersService {
 
   private mapUser(authUser: any, rawProfile: any, candidaturesCount = 0) {
     const email =
-      authUser?.email ||
-      rawProfile?.email ||
-      'utilisatrice@nayha.fr';
+      authUser?.email || rawProfile?.email || 'utilisatrice@nayha.fr';
 
-    const name =
-      this.formatUserName(
-        authUser?.user_metadata || rawProfile?.user_metadata,
-        rawProfile,
-        email,
-      );
+    const name = this.formatUserName(
+      authUser?.user_metadata || rawProfile?.user_metadata,
+      rawProfile,
+      email,
+    );
 
     const createdAt =
       rawProfile?.created_at ||
@@ -582,7 +655,8 @@ export class UsersService {
       .map((t) => new Date(t).getTime())
       .filter((t) => !isNaN(t));
 
-    const maxTime = timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
+    const maxTime =
+      timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
     const lastActiveAt = new Date(maxTime).toISOString();
 
     // Detect all active parcours
@@ -591,9 +665,11 @@ export class UsersService {
     const normalizeParcours = (val?: string | null): string => {
       if (!val) return '';
       const k = val.toLowerCase().replace(/[^a-z]/g, '');
-      if (k.includes('retouremploi') || k.includes('retour')) return 'retour_emploi';
+      if (k.includes('retouremploi') || k.includes('retour'))
+        return 'retour_emploi';
       if (k.includes('reconversion')) return 'reconversion';
-      if (k.includes('creation') || k.includes('activite')) return 'creation_activite';
+      if (k.includes('creation') || k.includes('activite'))
+        return 'creation_activite';
       return val;
     };
 
@@ -604,11 +680,16 @@ export class UsersService {
 
     // Check if user has progress/journeys in reconversion
     if (
-      (rawProfile?.reconversion_chemin_journey && Object.keys(rawProfile.reconversion_chemin_journey).length > 0) ||
-      (rawProfile?.reconversion_formations_journey && Object.keys(rawProfile.reconversion_formations_journey).length > 0) ||
-      (rawProfile?.reconversion_immersion_journey && Object.keys(rawProfile.reconversion_immersion_journey).length > 0) ||
-      (rawProfile?.reconversion_financement_journey && Object.keys(rawProfile.reconversion_financement_journey).length > 0) ||
-      (rawProfile?.reconversion_contact_journey && Object.keys(rawProfile.reconversion_contact_journey).length > 0)
+      (rawProfile?.reconversion_chemin_journey &&
+        Object.keys(rawProfile.reconversion_chemin_journey).length > 0) ||
+      (rawProfile?.reconversion_formations_journey &&
+        Object.keys(rawProfile.reconversion_formations_journey).length > 0) ||
+      (rawProfile?.reconversion_immersion_journey &&
+        Object.keys(rawProfile.reconversion_immersion_journey).length > 0) ||
+      (rawProfile?.reconversion_financement_journey &&
+        Object.keys(rawProfile.reconversion_financement_journey).length > 0) ||
+      (rawProfile?.reconversion_contact_journey &&
+        Object.keys(rawProfile.reconversion_contact_journey).length > 0)
     ) {
       activeParcoursSet.add('reconversion');
     }
@@ -629,7 +710,11 @@ export class UsersService {
     }
 
     const parcoursTypes = Array.from(activeParcoursSet);
-    const primaryParcours = parcoursTypes[0] || (rawProfile?.parcours_type ? normalizeParcours(rawProfile.parcours_type) : null);
+    const primaryParcours =
+      parcoursTypes[0] ||
+      (rawProfile?.parcours_type
+        ? normalizeParcours(rawProfile.parcours_type)
+        : null);
 
     return {
       id: rawProfile?.id || authUser?.id,
@@ -655,12 +740,15 @@ export class UsersService {
       parcours_first_candidature_completed:
         candidaturesCount > 0 ||
         (rawProfile?.parcours_first_candidature_completed ?? false),
-      ateliers_emploi_watched: Array.isArray(rawProfile?.ateliers_emploi_watched)
+      ateliers_emploi_watched: Array.isArray(
+        rawProfile?.ateliers_emploi_watched,
+      )
         ? rawProfile.ateliers_emploi_watched
         : [],
-      actions_semaine_count: candidaturesCount > 0
-        ? candidaturesCount
-        : (rawProfile?.actions_semaine_count ?? 0),
+      actions_semaine_count:
+        candidaturesCount > 0
+          ? candidaturesCount
+          : (rawProfile?.actions_semaine_count ?? 0),
       cv_generated: !!rawProfile?.cv_base,
       linkedin_optimized: !!rawProfile?.linkedin_profil,
       is_blocked: rawProfile?.is_blocked ?? false,

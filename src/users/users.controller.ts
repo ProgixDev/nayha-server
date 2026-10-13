@@ -44,7 +44,10 @@ export class UsersController {
   }
 
   @Patch('admin/:id/block')
-  toggleBlockUser(@Param('id') id: string, @Body('is_blocked') isBlocked: boolean) {
+  toggleBlockUser(
+    @Param('id') id: string,
+    @Body('is_blocked') isBlocked: boolean,
+  ) {
     return this.usersService.toggleBlockUser(id, isBlocked);
   }
 
@@ -58,10 +61,7 @@ export class UsersController {
 
   @Patch('me')
   @UseGuards(SupabaseJwtGuard)
-  updateProfile(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: UpdateProfileDto,
-  ) {
+  updateProfile(@CurrentUser() user: AuthUser, @Body() dto: UpdateProfileDto) {
     return this.usersService.updateProfile(user.id, dto);
   }
 
@@ -109,6 +109,13 @@ export class UsersController {
       file.buffer,
       file.mimetype || 'image/jpeg',
     );
+  }
+
+  /** Right to erasure: permanently deletes the account and its data. */
+  @Delete('me')
+  @UseGuards(SupabaseJwtGuard)
+  deleteAccount(@CurrentUser() user: AuthUser) {
+    return this.usersService.deleteAccount(user.id);
   }
 
   @Delete('me/avatar')
