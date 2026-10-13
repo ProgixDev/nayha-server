@@ -111,6 +111,13 @@ export class UsersController {
     );
   }
 
+  /** Right of access: a copy of all the person's data. */
+  @Get('me/export')
+  @UseGuards(SupabaseJwtGuard)
+  exportData(@CurrentUser() user: AuthUser) {
+    return this.usersService.exportData(user.id);
+  }
+
   /** Right to erasure: permanently deletes the account and its data. */
   @Delete('me')
   @UseGuards(SupabaseJwtGuard)

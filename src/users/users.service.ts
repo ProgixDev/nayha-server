@@ -487,6 +487,64 @@ export class UsersService {
   }
 
   /**
+   * Right of access and portability: everything NAYHA stores about the
+   * person, as one JSON document.
+   */
+  async exportData(userId: string) {
+    const { data: profile, error: profileError } = await this.supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle<Record<string, unknown>>();
+    if (profileError) {
+      throw new InternalServerErrorException(
+        'Impossible de préparer l’export pour le moment.',
+      );
+    }
+    const { data: auth } = await this.supabase.auth.admin.getUserById(userId);
+
+    const tables = [
+      'candidatures',
+      'candidature_actions',
+      'relance_messages',
+      'bilans_mensuels',
+      'coaching_sessions',
+      'coaching_messages',
+      'community_posts',
+      'community_comments',
+      'community_reactions',
+      'community_reports',
+      'atelier_views',
+      'blog_views',
+      'ai_usage',
+    ];
+    const related: Record<string, unknown> = {};
+    for (const table of tables) {
+      const { data, error } = await this.supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', userId);
+      if (error) {
+        this.logger.error(`Export: ${table} failed for user ${userId}`);
+        related[table] = { error: 'indisponible' };
+      } else {
+        related[table] = data;
+      }
+    }
+
+    return {
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: userId,
+        email: auth?.user?.email ?? null,
+        createdAt: auth?.user?.created_at ?? null,
+      },
+      profile,
+      ...related,
+    };
+  }
+
+  /**
    * Right to erasure: removes the account and everything tied to it.
    * The auth user goes first so a failure leaves the account intact and the
    * person can simply retry; the cleanup after it is best effort and logged.
