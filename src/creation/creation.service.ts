@@ -60,6 +60,42 @@ const fundingStatuses = ['aVerifier', 'enCours', 'confirme', 'nonConcerne'];
 const offerFormats = ['presentiel', 'enLigne', 'hybride', 'produit'];
 const microActivityKinds = ['vente', 'service', 'liberal'];
 
+const marketHintKeys = [
+  'problem',
+  'places',
+  'competitorName',
+  'competitorOffer',
+  'competitorPrice',
+  'person',
+  'need',
+  'objections',
+  'priceReaction',
+];
+const offerHintKeys = [
+  'offerTitle',
+  'offerContent',
+  'keyBenefit',
+  'targetCustomer',
+  'coreProblem',
+];
+const hintRule = `"hints": pour chaque champ listé, un exemple court (12 mots maximum) commençant par "Ex : ", écrit pour CE projet précis (son activité, son public, sa zone), que la personne lira en gris dans un champ vide avant d'écrire. Tutoie. Jamais d'exemple générique ni d'un autre métier. `;
+
+/** Keeps only the expected hint fields, as short "Ex : …" strings. */
+function pickHints(value: unknown, keys: string[]): Record<string, string> {
+  const source =
+    value !== null && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : {};
+  const hints: Record<string, string> = {};
+  for (const key of keys) {
+    const hint = source[key];
+    if (typeof hint === 'string' && hint.trim()) {
+      hints[key] = hint.trim().slice(0, 140);
+    }
+  }
+  return hints;
+}
+
 @Injectable()
 export class CreationService {
   private readonly logger = new Logger(CreationService.name);
@@ -345,7 +381,7 @@ export class CreationService {
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
         temperature: 0.6,
-        max_tokens: 1200,
+        max_tokens: 1500,
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -358,7 +394,9 @@ export class CreationService {
               `"alternatives": 3 types de solutions que ces personnes utilisent déjà aujourd'hui (concurrents, solutions gratuites ou « faire soi-même »). Donne des types génériques, jamais de nom d'entreprise. "typicalPrice" donne un ordre de prix courant en France si tu le connais, sinon une chaîne vide. ` +
               `"questions": 3 questions ouvertes à poser à un futur client, au vouvoiement, sur son vécu et non sur l'idée (pas de « est-ce que vous achèteriez »). ` +
               `N'invente aucune donnée chiffrée sur la taille du marché. Ne répète aucune donnée personnelle. ` +
-              `Réponds uniquement en JSON: {"problems":["..."],"places":[{"label":"...","detail":"..."}],"alternatives":[{"name":"...","offer":"...","typicalPrice":"..."}],"questions":["..."]}`,
+              hintRule +
+              `Champs de "hints" : problem (le problème de ses clients), places (où les rencontrer), competitorName (une solution concurrente), competitorOffer (ce qu'elle propose), competitorPrice (son prix), person (profil anonyme d'une personne interrogée, sans nom), need (ce que cette personne dit de son besoin), objections (ses hésitations), priceReaction (ce qu'elle dépense ou paierait). ` +
+              `Réponds uniquement en JSON: {"problems":["..."],"places":[{"label":"...","detail":"..."}],"alternatives":[{"name":"...","offer":"...","typicalPrice":"..."}],"questions":["..."],"hints":{"problem":"Ex : ...","places":"Ex : ...","competitorName":"Ex : ...","competitorOffer":"Ex : ...","competitorPrice":"Ex : ...","person":"Ex : ...","need":"Ex : ...","objections":"Ex : ...","priceReaction":"Ex : ..."}}`,
           },
           {
             role: 'user',
@@ -407,7 +445,13 @@ export class CreationService {
         throw new Error('OpenAI returned an incomplete market starter');
       }
 
-      return { problems, places, alternatives, questions };
+      return {
+        problems,
+        places,
+        alternatives,
+        questions,
+        hints: pickHints(parsed.hints, marketHintKeys),
+      };
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
       this.logger.error(`Market starter generation failed: ${detail}`);
@@ -453,7 +497,7 @@ export class CreationService {
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
         temperature: 0.4,
-        max_tokens: 900,
+        max_tokens: 1200,
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -469,7 +513,9 @@ export class CreationService {
               `"priceLow" et "priceHigh": fourchette de prix courante en France pour une offre comparable, en euros, nombres entiers. Tiens compte des prix observés dans les retours et la concurrence s'ils existent. "priceUnit": l'unité (ex: "par séance", "par pièce", "par mois"). "priceRationale": une phrase qui explique d'où vient la fourchette. ` +
               `"timePerSaleHours": temps de travail réaliste pour une vente, préparation comprise, en heures (nombre). "monthlyFixedCosts": frais fixes mensuels typiques pour démarrer petit (assurance, outils, téléphone), en euros. ` +
               `Ne promets pas de résultat et n'invente pas de chiffre de marché. ` +
-              `Réponds uniquement en JSON: {"offerTitle":"","targetCustomer":"","keyBenefit":"","offerContent":"","offerFormat":"","activityKind":"","priceLow":0,"priceHigh":0,"priceUnit":"","priceRationale":"","timePerSaleHours":0,"monthlyFixedCosts":0}`,
+              hintRule +
+              `Champs de "hints" : offerTitle, offerContent, keyBenefit, targetCustomer, coreProblem. Ils doivent proposer une autre formulation que tes propositions, pour donner une idée sans recopier. ` +
+              `Réponds uniquement en JSON: {"offerTitle":"","targetCustomer":"","keyBenefit":"","offerContent":"","offerFormat":"","activityKind":"","priceLow":0,"priceHigh":0,"priceUnit":"","priceRationale":"","timePerSaleHours":0,"monthlyFixedCosts":0,"hints":{"offerTitle":"Ex : ...","offerContent":"Ex : ...","keyBenefit":"Ex : ...","targetCustomer":"Ex : ...","coreProblem":"Ex : ..."}}`,
           },
           {
             role: 'user',
@@ -507,6 +553,7 @@ export class CreationService {
         priceRationale: text(parsed.priceRationale, 220),
         timePerSaleHours: amount(parsed.timePerSaleHours, 80),
         monthlyFixedCosts: amount(parsed.monthlyFixedCosts, 10_000),
+        hints: pickHints(parsed.hints, offerHintKeys),
       };
       if (!starter.offerTitle || !starter.keyBenefit) {
         throw new Error('OpenAI returned an incomplete offer starter');
