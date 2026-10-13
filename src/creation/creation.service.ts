@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
+import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 type JourneySection = Record<string, unknown>;
@@ -70,17 +71,50 @@ export class CreationService {
     const history = (dto.history ?? []).slice(-16);
     const { data: profile, error } = await this.supabase
       .from('user_profiles')
-      .select('creation_journey')
+      .select('creation_journey, diagnostic_vie_data, diagnostic_pro_data')
       .eq('id', userId)
       .maybeSingle();
     if (error) {
       this.logger.warn(`Unable to load creation context: ${error.message}`);
     }
+    const personalFields = new Set([
+      'name',
+      'nom',
+      'prenom',
+      'firstname',
+      'lastname',
+      'fullname',
+      'email',
+      'phone',
+      'telephone',
+      'mobile',
+      'address',
+      'adresse',
+      'dateofbirth',
+      'birthdate',
+      'datenaissance',
+    ]);
+    const withoutIdentity = (data: unknown): unknown => {
+      if (Array.isArray(data)) return data.map(withoutIdentity);
+      if (!data || typeof data !== 'object') return data;
+      return Object.fromEntries(
+        Object.entries(data)
+          .filter(
+            ([key]) =>
+              !personalFields.has(key.toLowerCase().replace(/[_-]/g, '')),
+          )
+          .map(([key, value]) => [key, withoutIdentity(value)]),
+      );
+    };
+    const diagnosticContext = {
+      vie: withoutIdentity(profile?.diagnostic_vie_data),
+      professionnel: withoutIdentity(profile?.diagnostic_pro_data),
+    };
 
     const completionMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       {
         role: 'system',
-        content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données et le contexte enregistré, ne les redemande pas. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
+        content: `Tu es NAYHA, l’assistante IA du parcours de création d’activité en France. Tu aides la personne à comprendre l’écran en cours et à faire un petit pas concret. Réponds en français, tutoie, avec des mots simples et 80 mots maximum. Réponds d’abord à sa question; pose au plus une question courte si cela l’aide vraiment. Utilise les réponses déjà données, le contexte enregistré et le parcours de la personne, ne les redemande pas. Appuie-toi sur les diagnostics uniquement quand ils sont utiles au projet et ne répète pas de données personnelles. Ne prétends pas avoir validé la viabilité d’un projet ni l’éligibilité à une aide. Pour les questions juridiques, fiscales ou administratives, donne un repère prudent et oriente vers la source officielle. ${dto.screenContext ? `Écran actuel : ${dto.screenContext}` : ''}\nContexte enregistré : ${JSON.stringify(profile?.creation_journey ?? {})}\nDiagnostic de vie : ${JSON.stringify(diagnosticContext.vie)}\nDiagnostic professionnel : ${JSON.stringify(diagnosticContext.professionnel)}\nContexte du parcours transmis par l’application (peut être incomplet) : ${JSON.stringify(dto.journeyContext ?? {}).slice(0, 6000)}`,
       },
       ...history.map((turn) =>
         turn.role === 'assistant'
@@ -258,6 +292,116 @@ export class CreationService {
       this.logger.error(`Activity suggestion generation failed: ${detail}`);
       throw new ServiceUnavailableException(
         'Les pistes personnalisées sont momentanément indisponibles. Réessaie dans un instant.',
+      );
+    }
+  }
+
+  async generateMarketStarter(userId: string, dto: CreationMarketStarterDto) {
+    const { data: profile, error } = await this.supabase
+      .from('user_profiles')
+      .select('creation_journey, diagnostic_pro_data')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      this.logger.warn(
+        `Unable to load market starter context: ${error.message}`,
+      );
+    }
+
+    const journey = (profile?.creation_journey ?? {}) as {
+      situation?: Record<string, unknown> | null;
+      activite?: Record<string, unknown> | null;
+    };
+    const activite = dto.activite ?? journey.activite ?? null;
+    const idea =
+      typeof activite?.ideaDescription === 'string'
+        ? activite.ideaDescription.trim()
+        : '';
+    if (!idea) {
+      throw new BadRequestException(
+        "Décris d'abord ton idée d'activité à l'étape 2.",
+      );
+    }
+    const context = {
+      activite,
+      situation: dto.situation ?? journey.situation ?? null,
+      // Only the professional background helps here; the life diagnostic
+      // would add personal details without improving the market drafts.
+      diagnosticPro: (profile?.diagnostic_pro_data ?? null) as unknown,
+    };
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.6,
+        max_tokens: 1200,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              `Tu aides une personne qui débute dans la création d'activité en France à préparer l'étude de son marché. Elle n'a aucune connaissance en marketing. ` +
+              `À partir de son idée, propose des points de départ simples qu'elle pourra corriger. Utilise des mots du quotidien, sans jargon (pas de "persona", "B2B", "segment", "lead"). ` +
+              `"problems": 3 formulations différentes du problème que vivent ses futurs clients, chacune en une phrase courte qui dit qui, dans quelle situation et ce qui est difficile. Décris le problème, pas la solution. ` +
+              `"places": 5 endroits concrets, en ligne ou près de chez elle, où rencontrer ces personnes pour leur parler (label de 2 à 5 mots, detail d'une phrase). Adapte-les au canal et à la zone indiqués. ` +
+              `"alternatives": 3 types de solutions que ces personnes utilisent déjà aujourd'hui (concurrents, solutions gratuites ou « faire soi-même »). Donne des types génériques, jamais de nom d'entreprise. "typicalPrice" donne un ordre de prix courant en France si tu le connais, sinon une chaîne vide. ` +
+              `"questions": 3 questions ouvertes à poser à un futur client, au vouvoiement, sur son vécu et non sur l'idée (pas de « est-ce que vous achèteriez »). ` +
+              `N'invente aucune donnée chiffrée sur la taille du marché. Ne répète aucune donnée personnelle. ` +
+              `Réponds uniquement en JSON: {"problems":["..."],"places":[{"label":"...","detail":"..."}],"alternatives":[{"name":"...","offer":"...","typicalPrice":"..."}],"questions":["..."]}`,
+          },
+          {
+            role: 'user',
+            content: `Contexte du projet : ${JSON.stringify(context).slice(0, 8000)}`,
+          },
+        ],
+      });
+
+      const content = completion.choices[0]?.message?.content?.trim();
+      if (!content) throw new Error('OpenAI returned an empty market starter');
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+
+      const text = (value: unknown, maxLength: number) =>
+        typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+      const list = (value: unknown): unknown[] =>
+        Array.isArray(value) ? (value as unknown[]) : [];
+      const record = (value: unknown) =>
+        value !== null && typeof value === 'object'
+          ? (value as Record<string, unknown>)
+          : {};
+
+      const problems = list(parsed.problems)
+        .map((value) => text(value, 220))
+        .filter(Boolean)
+        .slice(0, 3);
+      const places = list(parsed.places)
+        .map((value) => ({
+          label: text(record(value).label, 48),
+          detail: text(record(value).detail, 160),
+        }))
+        .filter((place) => place.label)
+        .slice(0, 5);
+      const alternatives = list(parsed.alternatives)
+        .map((value) => ({
+          name: text(record(value).name, 80),
+          offer: text(record(value).offer, 160),
+          typicalPrice: text(record(value).typicalPrice, 60),
+        }))
+        .filter((alternative) => alternative.name)
+        .slice(0, 3);
+      const questions = list(parsed.questions)
+        .map((value) => text(value, 200))
+        .filter(Boolean)
+        .slice(0, 3);
+      if (!problems.length || !places.length) {
+        throw new Error('OpenAI returned an incomplete market starter');
+      }
+
+      return { problems, places, alternatives, questions };
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(`Market starter generation failed: ${detail}`);
+      throw new ServiceUnavailableException(
+        'Les propositions de NAYHA sont momentanément indisponibles. Tu peux remplir cette étape avec tes mots.',
       );
     }
   }

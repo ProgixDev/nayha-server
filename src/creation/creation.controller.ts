@@ -6,6 +6,7 @@ import {
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import { CreationService } from './creation.service';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
+import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 @Controller('creation')
@@ -38,5 +39,14 @@ export class CreationController {
   @Post('activity-suggestions')
   activitySuggestions(@CurrentUser() user: AuthUser) {
     return this.creationService.generateActivitySuggestions(user.id);
+  }
+
+  /** Draft market-step starting points (problem, places, alternatives) from the idea. */
+  @Post('market-starter')
+  marketStarter(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationMarketStarterDto,
+  ) {
+    return this.creationService.generateMarketStarter(user.id, dto);
   }
 }
