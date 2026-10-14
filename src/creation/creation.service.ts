@@ -946,19 +946,21 @@ export class CreationService {
       'mobilityPreference',
       'isConfirmed',
     ]);
+    // The app sends null for answers not given yet (a step saved before it
+    // is completed); only a value outside the list is invalid.
     if (
-      input.currentStatus !== undefined &&
+      input.currentStatus != null &&
       !situationStatuses.includes(String(input.currentStatus))
     ) {
       throw new BadRequestException('Situation professionnelle invalide');
     }
     if (
-      input.launchMode !== undefined &&
+      input.launchMode != null &&
       !launchModes.includes(String(input.launchMode))
     ) {
       throw new BadRequestException('Mode de lancement invalide');
     }
-    this.validateNumber(input.weeklyHours, 'weeklyHours', 0, 168);
+    this.validateNumber(input.weeklyHours, 'weeklyHours', 0, 168, true);
     this.validateNumber(
       input.monthlyIncomeGoal,
       'monthlyIncomeGoal',
@@ -989,9 +991,7 @@ export class CreationService {
     }
     if (
       input.isConfirmed === true &&
-      (!input.currentStatus ||
-        input.weeklyHours === undefined ||
-        !input.launchMode)
+      (!input.currentStatus || input.weeklyHours == null || !input.launchMode)
     ) {
       throw new BadRequestException(
         'Complétez votre situation avant de la confirmer',
@@ -1015,10 +1015,17 @@ export class CreationService {
       'reasonsForChoice',
       'isConfirmed',
     ]);
-    for (const key of ['hasExistingIdea', 'isRegulated', 'isConfirmed']) {
+    for (const key of ['isRegulated', 'isConfirmed']) {
       if (input[key] !== undefined && typeof input[key] !== 'boolean') {
         throw new BadRequestException(`Valeur invalide pour ${key}`);
       }
+    }
+    // null until the person answers "As-tu déjà une idée ?".
+    if (
+      input.hasExistingIdea != null &&
+      typeof input.hasExistingIdea !== 'boolean'
+    ) {
+      throw new BadRequestException('Valeur invalide pour hasExistingIdea');
     }
     if (
       input.hasAssociates !== undefined &&
