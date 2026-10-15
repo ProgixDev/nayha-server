@@ -1,5 +1,6 @@
 import {
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   UnauthorizedException,
@@ -32,8 +33,9 @@ export class AdminSettingsService {
   private readonly logger = new Logger(AdminSettingsService.name);
   private supabase: SupabaseClient;
 
-  private inMemoryUsers: AdminUser[] = [...DEFAULT_ADMIN_USERS];
-  private inMemoryPermissions: RolePermissions[] = [...DEFAULT_ROLE_PERMISSIONS];
+  private inMemoryPermissions: RolePermissions[] = [
+    ...DEFAULT_ROLE_PERMISSIONS,
+  ];
 
   constructor(private configService: ConfigService) {
     this.supabase = createClient(
@@ -43,185 +45,143 @@ export class AdminSettingsService {
     );
   }
 
+  /**
+   * Only people listed in admin_users, active, and signing in with the
+   * password of their Supabase account get a session.
+   */
   async login(dto: AdminLoginDto) {
     const email = dto.email.toLowerCase().trim();
-    const users = await this.getUsers();
-    const admin = users.find((u) => u.email.toLowerCase() === email);
+    const refused = new UnauthorizedException(
+      'E-mail ou mot de passe incorrect.',
+    );
 
-    if (!admin) {
-      throw new UnauthorizedException("Ce compte n'est pas autorisé à accéder à l'administration.");
-    }
-
+    const admin = await this.findAdminByEmail(email);
+    if (!admin) throw refused;
     if (!admin.is_active) {
-      throw new UnauthorizedException("Ce compte administrateur est désactivé.");
+      throw new UnauthorizedException(
+        'Ce compte administrateur est désactivé.',
+      );
     }
 
-    let token = `adm_tok_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const { data: authData, error: authError } =
+      await this.supabase.auth.signInWithPassword({
+        email,
+        password: dto.password,
+      });
+    const token = authData?.session?.access_token;
+    if (authError || !token) throw refused;
 
-    // Try Supabase Auth password verification
-    try {
-      const { data: authData, error: authError } =
-        await this.supabase.auth.signInWithPassword({
-          email,
-          password: dto.password,
-        });
-
-      if (!authError && authData?.session?.access_token) {
-        token = authData.session.access_token;
-      }
-    } catch (_) {
-      // fallback to admin verification
-    }
-
-    // Update last login
     const now = new Date().toISOString();
-    await this.updateUser(admin.id, { is_active: true } as any).catch(() => {});
+    await this.supabase
+      .from('admin_users')
+      .update({ last_login_at: now })
+      .eq('id', admin.id);
     admin.last_login_at = now;
-
-    // Get permissions for role
-    const allPermissions = await this.getPermissions();
-    const rolePerm = allPermissions.find((p) => p.role === admin.role);
 
     return {
       user: admin,
       token,
-      permissions: rolePerm?.permissions || {},
+      permissions: await this.permissionsFor(admin.role),
     };
   }
 
+  /** The admin behind a Supabase access token, or 401. */
   async getMe(authHeader?: string) {
-    if (!authHeader?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Non authentifié');
-    }
-    const token = authHeader.split(' ')[1];
-    if (!token) {
-      throw new UnauthorizedException('Jeton manquant');
+    const token = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : '';
+    if (!token) throw new UnauthorizedException('Non authentifié');
+
+    const { data, error } = await this.supabase.auth.getUser(token);
+    const email = data?.user?.email?.toLowerCase();
+    if (error || !email) {
+      throw new UnauthorizedException('Session invalide ou expirée');
     }
 
-    // Check if token is a Supabase JWT
-    try {
-      const { data } = await this.supabase.auth.getUser(token);
-      if (data?.user?.email) {
-        const users = await this.getUsers();
-        const found = users.find((u) => u.email.toLowerCase() === data.user.email?.toLowerCase());
-        if (found && found.is_active) {
-          const allPermissions = await this.getPermissions();
-          const rolePerm = allPermissions.find((p) => p.role === found.role);
-          return {
-            user: found,
-            token,
-            permissions: rolePerm?.permissions || {},
-          };
-        }
-      }
-    } catch (_) {
-      // fallback
+    const admin = await this.findAdminByEmail(email);
+    if (!admin || !admin.is_active) {
+      throw new UnauthorizedException('Accès réservé à l’équipe NAYHA');
     }
-
-    // Return first active admin as fallback or session user
-    const users = await this.getUsers();
-    const active = users.find((u) => u.is_active) || users[0];
-    const allPermissions = await this.getPermissions();
-    const rolePerm = allPermissions.find((p) => p.role === active.role);
 
     return {
-      user: active,
+      user: admin,
       token,
-      permissions: rolePerm?.permissions || {},
+      permissions: await this.permissionsFor(admin.role),
     };
   }
 
   async getUsers(): Promise<AdminUser[]> {
-    try {
-      const { data, error } = await this.supabase
-        .from('admin_users')
-        .select('*')
-        .order('created_at', { ascending: true });
-
-      if (!error && data && data.length > 0) {
-        this.inMemoryUsers = data;
-        return data;
-      }
-    } catch (err) {
-      this.logger.warn(`Could not fetch admin_users from Supabase: ${err}`);
-    }
-
-    return [...this.inMemoryUsers];
+    const { data, error } = await this.supabase
+      .from('admin_users')
+      .select('*')
+      .order('created_at', { ascending: true });
+    if (error) this.fail('list admin users', error.message);
+    return (data ?? []) as AdminUser[];
   }
 
   async addUser(dto: CreateAdminUserDto): Promise<AdminUser> {
-    const id = `adm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
-
-    const newUser: AdminUser = {
-      id,
-      name: dto.name,
-      email: dto.email,
-      role: dto.role || 'admin',
-      avatar_url: dto.avatar_url ?? null,
-      created_at: now,
-      last_login_at: now,
-      is_active: dto.is_active ?? true,
-    };
-
-    try {
-      const { data, error } = await this.supabase
-        .from('admin_users')
-        .insert(newUser)
-        .select()
-        .single();
-
-      if (!error && data) {
-        this.inMemoryUsers = [...this.inMemoryUsers.filter((u) => u.id !== id), data];
-        return data;
-      }
-    } catch (err) {
-      this.logger.warn(`Could not insert into admin_users in Supabase: ${err}`);
-    }
-
-    this.inMemoryUsers = [...this.inMemoryUsers, newUser];
-    return newUser;
+    const { data, error } = await this.supabase
+      .from('admin_users')
+      .insert({
+        id: `adm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name: dto.name,
+        email: dto.email.toLowerCase().trim(),
+        role: dto.role || 'admin',
+        avatar_url: dto.avatar_url ?? null,
+        created_at: now,
+        last_login_at: now,
+        is_active: dto.is_active ?? true,
+      })
+      .select()
+      .single<AdminUser>();
+    if (error || !data) this.fail('add admin user', error?.message);
+    return data;
   }
 
   async updateUser(id: string, dto: UpdateAdminUserDto): Promise<AdminUser> {
-    try {
-      const { data, error } = await this.supabase
-        .from('admin_users')
-        .update(dto)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (!error && data) {
-        const idx = this.inMemoryUsers.findIndex((u) => u.id === id);
-        if (idx !== -1) this.inMemoryUsers[idx] = data;
-        return data;
-      }
-    } catch (err) {
-      this.logger.warn(`Could not update admin_users in Supabase: ${err}`);
-    }
-
-    const idx = this.inMemoryUsers.findIndex((u) => u.id === id);
-    if (idx === -1) {
-      throw new NotFoundException(`Admin user ${id} not found`);
-    }
-
-    this.inMemoryUsers[idx] = {
-      ...this.inMemoryUsers[idx],
-      ...dto,
-    };
-    return this.inMemoryUsers[idx];
+    const { data, error } = await this.supabase
+      .from('admin_users')
+      .update(dto)
+      .eq('id', id)
+      .select()
+      .maybeSingle<AdminUser>();
+    if (error) this.fail('update admin user', error.message);
+    if (!data) throw new NotFoundException(`Admin user ${id} not found`);
+    return data;
   }
 
   async deleteUser(id: string): Promise<{ success: boolean }> {
-    try {
-      await this.supabase.from('admin_users').delete().eq('id', id);
-    } catch (err) {
-      this.logger.warn(`Could not delete from admin_users in Supabase: ${err}`);
-    }
-
-    this.inMemoryUsers = this.inMemoryUsers.filter((u) => u.id !== id);
+    const { error } = await this.supabase
+      .from('admin_users')
+      .delete()
+      .eq('id', id);
+    if (error) this.fail('delete admin user', error.message);
     return { success: true };
+  }
+
+  private async findAdminByEmail(email: string): Promise<AdminUser | null> {
+    const { data, error } = await this.supabase
+      .from('admin_users')
+      .select('*')
+      .ilike('email', email)
+      .maybeSingle<AdminUser>();
+    if (error) this.fail('read admin user', error.message);
+    return data;
+  }
+
+  private async permissionsFor(role: string) {
+    const all = await this.getPermissions();
+    return all.find((p) => p.role === role)?.permissions ?? {};
+  }
+
+  private fail(action: string, detail?: string): never {
+    this.logger.error(
+      `Admin settings: ${action} failed: ${detail ?? 'no data'}`,
+    );
+    throw new InternalServerErrorException(
+      'Le service d’administration est momentanément indisponible.',
+    );
   }
 
   async getPermissions(): Promise<RolePermissions[]> {
@@ -235,7 +195,9 @@ export class AdminSettingsService {
         return data;
       }
     } catch (err) {
-      this.logger.warn(`Could not fetch admin_role_permissions from Supabase: ${err}`);
+      this.logger.warn(
+        `Could not fetch admin_role_permissions from Supabase: ${err}`,
+      );
     }
 
     return [...this.inMemoryPermissions];
@@ -259,7 +221,9 @@ export class AdminSettingsService {
         return data;
       }
     } catch (err) {
-      this.logger.warn(`Could not upsert admin_role_permissions in Supabase: ${err}`);
+      this.logger.warn(
+        `Could not upsert admin_role_permissions in Supabase: ${err}`,
+      );
     }
 
     const idx = this.inMemoryPermissions.findIndex((p) => p.role === role);
@@ -272,59 +236,6 @@ export class AdminSettingsService {
     return updated;
   }
 }
-
-const DEFAULT_ADMIN_USERS: AdminUser[] = [
-  {
-    id: 'adm_001',
-    name: 'Meriem Boussaïd',
-    email: 'meriem@nayha.fr',
-    role: 'super_admin',
-    avatar_url: null,
-    created_at: '2025-01-10T09:00:00Z',
-    last_login_at: '2026-08-26T08:30:00Z',
-    is_active: true,
-  },
-  {
-    id: 'adm_002',
-    name: 'Abderraouf Zouaid',
-    email: 'abderraouf@progix.dev',
-    role: 'admin',
-    avatar_url: null,
-    created_at: '2025-03-15T10:00:00Z',
-    last_login_at: '2026-08-26T10:15:00Z',
-    is_active: true,
-  },
-  {
-    id: 'adm_003',
-    name: 'Sarah Benali',
-    email: 'sarah@nayha.fr',
-    role: 'moderator',
-    avatar_url: null,
-    created_at: '2025-06-01T14:00:00Z',
-    last_login_at: '2026-08-25T17:45:00Z',
-    is_active: true,
-  },
-  {
-    id: 'adm_004',
-    name: 'Nadia Khelifi',
-    email: 'nadia@nayha.fr',
-    role: 'viewer',
-    avatar_url: null,
-    created_at: '2025-09-20T11:00:00Z',
-    last_login_at: '2026-08-23T09:00:00Z',
-    is_active: true,
-  },
-  {
-    id: 'adm_005',
-    name: 'Leila Mansour',
-    email: 'leila@nayha.fr',
-    role: 'moderator',
-    avatar_url: null,
-    created_at: '2025-07-10T08:30:00Z',
-    last_login_at: '2026-08-12T14:20:00Z',
-    is_active: false,
-  },
-];
 
 const DEFAULT_ROLE_PERMISSIONS: RolePermissions[] = [
   {
