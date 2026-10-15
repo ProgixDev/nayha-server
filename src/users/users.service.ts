@@ -179,6 +179,45 @@ export class UsersService {
     return data;
   }
 
+  /**
+   * Updates first name, last name and city. They live in the life diagnostic
+   * answers, so only those keys change and the rest of the answers is kept.
+   */
+  async updateIdentity(
+    userId: string,
+    identity: { name: string; nom?: string; city?: string },
+  ) {
+    const { data: current, error: readError } = await this.supabase
+      .from('user_profiles')
+      .select('diagnostic_vie_data')
+      .eq('id', userId)
+      .single();
+
+    if (readError || !current) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    const diagnosticData = {
+      ...(current.diagnostic_vie_data ?? {}),
+      name: identity.name,
+      ...(identity.nom !== undefined ? { nom: identity.nom } : {}),
+      ...(identity.city !== undefined ? { city: identity.city } : {}),
+    };
+
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ diagnostic_vie_data: diagnosticData })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new NotFoundException('Profile not found');
+    }
+
+    return data;
+  }
+
   async submitDiagnosticVie(
     userId: string,
     diagnosticData: Record<string, any>,

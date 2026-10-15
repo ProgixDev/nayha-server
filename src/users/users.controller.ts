@@ -21,6 +21,7 @@ import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SubmitDiagnosticVieDto } from './dto/submit-diagnostic-vie.dto';
 import { SubmitDiagnosticProDto } from './dto/submit-diagnostic-pro.dto';
+import { UpdateIdentityDto } from './dto/update-identity.dto';
 
 @Controller('users')
 export class UsersController {
@@ -63,6 +64,15 @@ export class UsersController {
   @UseGuards(SupabaseJwtGuard)
   updateProfile(@CurrentUser() user: AuthUser, @Body() dto: UpdateProfileDto) {
     return this.usersService.updateProfile(user.id, dto);
+  }
+
+  @Patch('me/identity')
+  @UseGuards(SupabaseJwtGuard)
+  updateIdentity(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateIdentityDto,
+  ) {
+    return this.usersService.updateIdentity(user.id, dto);
   }
 
   @Post('me/diagnostic-vie')
