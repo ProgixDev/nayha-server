@@ -558,6 +558,7 @@ export class UsersService {
       'ai_usage',
       'support_tickets',
       'support_messages',
+      'push_tokens',
     ];
     const related: Record<string, unknown> = {};
     for (const table of tables) {
