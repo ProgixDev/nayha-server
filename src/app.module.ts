@@ -17,6 +17,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { CreationModule } from './creation/creation.module';
 import { HealthController } from './health.controller';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     DashboardModule,
     CreationModule,
     SubscriptionsModule,
+    SupportModule,
   ],
   controllers: [HealthController],
 })
