@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import type { AdminUserContext } from '../auth/guards/admin.guard';
+import { PushService } from '../push/push.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 
@@ -65,7 +66,10 @@ export class SupportService {
   private readonly logger = new Logger(SupportService.name);
   private supabase: SupabaseClient;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private pushService: PushService,
+  ) {
     this.supabase = createClient(
       this.configService.get<string>('SUPABASE_URL')!,
       this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -304,7 +308,12 @@ export class SupportService {
       last_message_at: now,
       last_message_preview: this.preview(dto.message),
     });
-    // Push notification to the user goes here once FCM is integrated.
+    // The content stays in the app: it can be personal.
+    void this.pushService.sendToUser(ticket.user_id, {
+      title: 'L’équipe NAYHA t’a répondu',
+      body: 'Ouvre l’application pour lire sa réponse.',
+      data: { type: 'support', ticketId: ticket.id },
+    });
     return this.getForAdmin(updated.id);
   }
 
