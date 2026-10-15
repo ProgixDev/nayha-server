@@ -63,8 +63,16 @@ export class AdminSettingsService {
       );
     }
 
+    // A throwaway client: signing in switches a client to the user's
+    // session, and the shared one must keep the service role (admin_users is
+    // only readable by it).
+    const authClient = createClient(
+      this.configService.get<string>('SUPABASE_URL')!,
+      this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
+      { auth: { persistSession: false, autoRefreshToken: false } },
+    );
     const { data: authData, error: authError } =
-      await this.supabase.auth.signInWithPassword({
+      await authClient.auth.signInWithPassword({
         email,
         password: dto.password,
       });
