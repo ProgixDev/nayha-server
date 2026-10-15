@@ -556,6 +556,8 @@ export class UsersService {
       'atelier_views',
       'blog_views',
       'ai_usage',
+      'support_tickets',
+      'support_messages',
     ];
     const related: Record<string, unknown> = {};
     for (const table of tables) {
@@ -625,22 +627,25 @@ export class UsersService {
       }
     }
 
-    const bucket = this.supabase.storage.from('avatars');
-    const { data: files, error: listError } = await bucket.list(userId, {
-      limit: 1000,
-    });
-    if (listError) {
-      this.logger.error(
-        `Account deletion: listing files failed for user ${userId}: ${listError.message}`,
-      );
-    } else if (files?.length) {
-      const { error: removeError } = await bucket.remove(
-        files.map((file) => `${userId}/${file.name}`),
-      );
-      if (removeError) {
+    // Profile pictures and support screenshots are stored under the user id.
+    for (const bucketName of ['avatars', 'support-attachments']) {
+      const bucket = this.supabase.storage.from(bucketName);
+      const { data: files, error: listError } = await bucket.list(userId, {
+        limit: 1000,
+      });
+      if (listError) {
         this.logger.error(
-          `Account deletion: removing files failed for user ${userId}: ${removeError.message}`,
+          `Account deletion: listing ${bucketName} failed for user ${userId}: ${listError.message}`,
         );
+      } else if (files?.length) {
+        const { error: removeError } = await bucket.remove(
+          files.map((file) => `${userId}/${file.name}`),
+        );
+        if (removeError) {
+          this.logger.error(
+            `Account deletion: removing ${bucketName} failed for user ${userId}: ${removeError.message}`,
+          );
+        }
       }
     }
 
