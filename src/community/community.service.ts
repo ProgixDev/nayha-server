@@ -4,6 +4,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreatePostDto } from './dto/create-post.dto';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { ReportPostDto } from './dto/report-post.dto';
+import { PushService } from '../push/push.service';
 
 export interface CommunityCommentEntity {
   id: string;
@@ -23,7 +24,10 @@ export class CommunityService {
   private supabase: SupabaseClient;
   private inMemoryComments: CommunityCommentEntity[] = [];
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private pushService: PushService,
+  ) {
     this.supabase = createClient(
       this.configService.get<string>('SUPABASE_URL')!,
       this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -370,6 +374,12 @@ export class CommunityService {
             .eq('id', postId);
         } catch (_) { }
 
+        void this.notifyReply(
+          userId,
+          postId,
+          newComment.parent_id ?? null,
+          firstName,
+        );
         return data;
       }
     } catch (_) {
@@ -378,6 +388,49 @@ export class CommunityService {
 
     this.inMemoryComments.push(newComment);
     return newComment;
+  }
+
+  /**
+   * Tells the author of the post, and the author of the comment answered,
+   * that someone replied. Never the person who wrote the reply, and only
+   * once per person. The text of the reply is not sent.
+   */
+  private async notifyReply(
+    authorId: string,
+    postId: string,
+    parentId: string | null,
+    authorName: string,
+  ) {
+    const recipients = new Map<string, string>();
+    const name = authorName.trim() || 'Quelqu’un';
+
+    if (parentId) {
+      const { data: parent } = await this.supabase
+        .from('community_comments')
+        .select('user_id')
+        .eq('id', parentId)
+        .maybeSingle<{ user_id: string | null }>();
+      if (parent?.user_id) {
+        recipients.set(parent.user_id, `${name} a répondu à ton commentaire`);
+      }
+    }
+    const { data: post } = await this.supabase
+      .from('community_posts')
+      .select('user_id')
+      .eq('id', postId)
+      .maybeSingle<{ user_id: string | null }>();
+    if (post?.user_id && !recipients.has(post.user_id)) {
+      recipients.set(post.user_id, `${name} a répondu à ta publication`);
+    }
+
+    recipients.delete(authorId);
+    for (const [userId, title] of recipients) {
+      await this.pushService.sendToUser(userId, {
+        title,
+        body: 'Ouvre la communauté pour lire sa réponse.',
+        data: { type: 'community', postId },
+      });
+    }
   }
 
   // ── Admin Operations ────────────────────────────────────────────────────────
