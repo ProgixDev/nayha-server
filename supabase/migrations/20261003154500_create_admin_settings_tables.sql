@@ -14,6 +14,11 @@ CREATE TABLE IF NOT EXISTS admin_role_permissions (
   permissions JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Only the API (service role) reads or writes these tables: without RLS the
+-- app's public key could add itself as an admin.
+ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_role_permissions ENABLE ROW LEVEL SECURITY;
+
 -- Seed initial admin users if empty
 INSERT INTO admin_users (id, name, email, role, avatar_url, created_at, last_login_at, is_active)
 VALUES 
