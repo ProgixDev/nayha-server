@@ -103,7 +103,7 @@ export class SupportService {
       .insert({
         user_id: userId,
         topic: dto.topic,
-        subject: this.subjectFrom(dto.message),
+        subject: dto.subject || this.subjectFrom(dto.message),
         status: 'waiting',
         admin_unread: true,
         user_unread: false,

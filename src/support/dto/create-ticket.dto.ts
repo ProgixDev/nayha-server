@@ -24,6 +24,13 @@ export class CreateTicketDto {
   @IsIn(SUPPORT_TOPICS)
   topic: SupportTopic;
 
+  /** Title typed by the user; derived from the message when missing. */
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(80)
+  subject?: string;
+
   @Transform(trim)
   @IsString()
   @IsNotEmpty()
