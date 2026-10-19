@@ -5,6 +5,7 @@ import {
   Headers,
   HttpCode,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -26,11 +27,11 @@ export class SubscriptionsController {
     return this.subscriptionsService.syncUser(user.id);
   }
 
-  /** Subscribers and figures for the admin. */
+  /** Figures and one page of subscribers: ?page=&pageSize=&status=&search= */
   @Get('admin')
   @UseGuards(AdminGuard)
-  listForAdmin() {
-    return this.subscriptionsService.listForAdmin();
+  listForAdmin(@Query() query: Record<string, string | undefined>) {
+    return this.subscriptionsService.listForAdmin(query);
   }
 
   /** RevenueCat server-to-server notifications (renewal, cancel, refund…). */

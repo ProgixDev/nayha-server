@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { pageRequest, paginateArray, searchable } from '../common/pagination';
 
 const REVENUECAT_API = 'https://api.revenuecat.com/v1';
 
@@ -134,7 +135,11 @@ export class SubscriptionsService {
    * the admin. Revenue is an estimate from store prices, before the stores'
    * commission.
    */
-  async listForAdmin() {
+  /**
+   * Figures plus one page of subscribers.
+   * ?page=&pageSize=&status=active|cancelling|expired|all&search= (name or e-mail)
+   */
+  async listForAdmin(query: Record<string, string | undefined> = {}) {
     const { data, error } = await this.supabase
       .from('user_profiles')
       .select(
@@ -191,8 +196,26 @@ export class SubscriptionsService {
       return sum + price / months;
     }, 0);
 
+    const status = query.status ?? 'all';
+    const q = searchable(query.search).trim();
+    const filtered = subscriptions.filter((s) => {
+      if (status === 'active' && s.status !== 'active') return false;
+      if (
+        status === 'cancelling' &&
+        !(s.status === 'active' && s.willRenew === false)
+      ) {
+        return false;
+      }
+      if (status === 'expired' && s.status !== 'expired') return false;
+      if (q && ![s.name, s.email].some((v) => searchable(v).includes(q))) {
+        return false;
+      }
+      return true;
+    });
+
     return {
       stats: {
+        total: subscriptions.length,
         active: active.length,
         cancelling: active.filter((s) => s.willRenew === false).length,
         expired: subscriptions.length - active.length,
@@ -200,7 +223,7 @@ export class SubscriptionsService {
         byDuration,
         unknownDuration: active.filter((s) => !s.duration).length,
       },
-      subscriptions,
+      ...paginateArray(filtered, pageRequest(query)),
     };
   }
 
