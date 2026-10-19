@@ -51,6 +51,8 @@ interface TrainingOffer {
   cpf_eligible: boolean;
   apprentissage: boolean;
   qualiopi: boolean | null;
+  /** true when qualiopi comes from a check, not from the CPF rule. */
+  qualiopi_verified: boolean;
   certification_active: boolean | null;
   dedupe_key: string | null;
   last_seen_at: string;
@@ -157,6 +159,15 @@ const ENTREPRISES_URL = 'https://recherche-entreprises.api.gouv.fr/search';
  */
 const SITES_PER_RUN = 3000;
 const SITE_LOOKUPS_PER_SECOND = 3;
+/** Providers whose Qualiopi certification is checked per import. */
+const PROVIDERS_PER_RUN = 2000;
+
+interface CertificationCodes {
+  /** RNCP codes published in CertifInfo. */
+  rncp: Set<string>;
+  /** RS codes listed in CertifInfo. */
+  rs: Set<string>;
+}
 
 interface ProviderSite {
   siren: string;
@@ -290,8 +301,9 @@ export class TrainingOffersService {
   // ── Mon Compte Formation ──────────────────────────────────────────────────
 
   private async syncMcf(runStartedAt: string): Promise<SyncResult> {
-    const activeRncp = await this.activeRncpCodes();
+    const certifications = await this.certificationCodes();
     const sites = await this.knownSites();
+    const providers = await this.knownProviders();
     const params = new URLSearchParams({
       select: MCF_FIELDS.join(','),
       where: 'nb_session_active>0',
@@ -339,7 +351,13 @@ export class TrainingOffersService {
           skipped++;
           continue;
         }
-        const offer = this.fromMcf(row, activeRncp, sites, runStartedAt);
+        const offer = this.fromMcf(
+          row,
+          certifications,
+          sites,
+          providers,
+          runStartedAt,
+        );
         if (!offer) {
           skipped++;
           continue;
@@ -358,13 +376,23 @@ export class TrainingOffersService {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.logger.warn(`Training provider sites lookup failed: ${message}`);
     });
+    // A failed check only leaves Qualiopi "by the CPF rule".
+    await this.checkProvidersQualiopi(PROVIDERS_PER_RUN).catch(
+      (cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        this.logger.warn(
+          `Training providers Qualiopi check failed: ${message}`,
+        );
+      },
+    );
     return { imported, skipped, removed };
   }
 
   private fromMcf(
     row: Record<string, unknown>,
-    activeRncp: Set<string>,
+    certifications: CertificationCodes,
     sites: Map<string, ProviderSite>,
+    providers: Map<string, boolean>,
     seenAt: string,
   ): TrainingOffer | null {
     const numero = text(row.numero_formation);
@@ -416,11 +444,19 @@ export class TrainingOffersService {
       hours_min: num(row.nombre_heures_total_min),
       hours_max: num(row.nombre_heures_total_max),
       // Every offer listed on Mon Compte Formation is CPF-eligible, and
-      // listing it requires Qualiopi certification of the provider.
+      // listing it requires Qualiopi certification of the provider (law
+      // since 2022). The company register confirms it per provider.
       cpf_eligible: true,
       apprentissage: false,
-      qualiopi: true,
-      certification_active: codeRncp ? activeRncp.has(codeRncp) : null,
+      qualiopi: (siren ? providers.get(siren) : undefined) ?? true,
+      qualiopi_verified: !!siren && providers.has(siren),
+      // An RNCP code missing from CertifInfo is no longer published. RS
+      // codes not found stay unknown: CertifInfo lists them with a delay.
+      certification_active: codeRncp
+        ? certifications.rncp.has(codeRncp)
+        : codeRs && certifications.rs.has(codeRs)
+          ? true
+          : null,
       dedupe_key: dedupeKey(siret, codeRncp, codeRs, title),
       last_seen_at: seenAt,
       updated_at: seenAt,
@@ -557,6 +593,8 @@ export class TrainingOffersService {
         typeof organisme.renseignements_specifiques?.qualiopi === 'boolean'
           ? organisme.renseignements_specifiques.qualiopi
           : null,
+      qualiopi_verified:
+        typeof organisme.renseignements_specifiques?.qualiopi === 'boolean',
       certification_active:
         typeof certification.periode_validite?.rncp?.actif === 'boolean'
           ? certification.periode_validite.rncp.actif
@@ -764,6 +802,140 @@ export class TrainingOffersService {
     return result(open.length > 1 ? 'ambiguous' : 'not_found');
   }
 
+  // ── Providers' Qualiopi certification ─────────────────────────────────────
+
+  /** Qualiopi results already known, by siren. */
+  private async knownProviders(): Promise<Map<string, boolean>> {
+    const providers = new Map<string, boolean>();
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await this.supabase
+        .from('training_providers')
+        .select('siren, qualiopi')
+        .not('qualiopi', 'is', null)
+        .order('siren')
+        .range(from, from + pageSize - 1);
+      if (error) throw new Error(`Reading providers failed: ${error.message}`);
+      for (const row of (data ?? []) as {
+        siren: string;
+        qualiopi: boolean;
+      }[]) {
+        providers.set(row.siren, row.qualiopi);
+      }
+      if (!data || data.length < pageSize) break;
+    }
+    return providers;
+  }
+
+  /**
+   * Checks in the company register whether Mon Compte Formation providers
+   * are Qualiopi-certified, then copies the result onto their offers.
+   * Returns how many providers were checked.
+   */
+  async checkProvidersQualiopi(limit: number): Promise<number> {
+    let checked = 0;
+    let updated = 0;
+    let stopped = false;
+    while (!stopped && checked < limit) {
+      const { data, error } = await this.supabase.rpc(
+        'training_providers_to_check',
+        { p_limit: Math.min(1000, limit - checked) },
+      );
+      if (error) throw new Error(`Listing providers failed: ${error.message}`);
+      const sirens = ((data ?? []) as { siren: string }[]).map((r) => r.siren);
+      if (!sirens.length) break;
+
+      for (let i = 0; i < sirens.length && !stopped; i += 10) {
+        const rows: {
+          siren: string;
+          qualiopi: boolean | null;
+          checked_at: string;
+        }[] = [];
+        // Small chunks: one big provider can have thousands of offers to update.
+        const chunk = sirens.slice(i, i + 10);
+        for (let j = 0; j < chunk.length; j += SITE_LOOKUPS_PER_SECOND) {
+          const started = Date.now();
+          const batch = chunk.slice(j, j + SITE_LOOKUPS_PER_SECOND);
+          const results = await Promise.all(
+            batch.map((siren) => this.findProviderQualiopi(siren)),
+          );
+          results.forEach((qualiopi, index) => {
+            if (qualiopi === undefined) return;
+            rows.push({
+              siren: batch[index],
+              qualiopi,
+              checked_at: new Date().toISOString(),
+            });
+          });
+          checked += batch.length;
+          if (results.some((qualiopi) => qualiopi === undefined)) {
+            this.logger.warn(
+              'Training providers: company register unavailable, stopping',
+            );
+            stopped = true;
+            break;
+          }
+          const wait = 1000 - (Date.now() - started);
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        }
+        if (!rows.length) continue;
+        await withRetry('Saving providers', async () => {
+          const { error: saveError } = await this.supabase
+            .from('training_providers')
+            .upsert(rows, { onConflict: 'siren' });
+          if (saveError) throw new Error(saveError.message);
+        });
+        const { data: count, error: applyError } = await this.supabase.rpc(
+          'apply_training_providers',
+          { p_sirens: rows.map((row) => row.siren) },
+        );
+        if (applyError) {
+          throw new Error(`Applying providers failed: ${applyError.message}`);
+        }
+        updated += Number(count ?? 0);
+      }
+    }
+    this.logger.log(
+      `Training providers: ${checked} checked for Qualiopi, ${updated} offers updated`,
+    );
+    return checked;
+  }
+
+  /**
+   * est_qualiopi of a company in the register: true/false, null when the
+   * register does not know it, undefined when it cannot be reached.
+   */
+  private async findProviderQualiopi(
+    siren: string,
+  ): Promise<boolean | null | undefined> {
+    try {
+      const payload = await withRetry(
+        'Company register',
+        async () => {
+          const response = await fetch(
+            `${ENTREPRISES_URL}?${new URLSearchParams({ q: siren, per_page: '1' })}`,
+          );
+          if (response.status === 429 || response.status >= 500) {
+            throw new Error(`Company register busy (${response.status})`);
+          }
+          if (!response.ok) return {};
+          return (await response.json()) as {
+            results?: {
+              siren?: string;
+              complements?: { est_qualiopi?: boolean };
+            }[];
+          };
+        },
+        { tries: 4, delayMs: 20_000 },
+      );
+      const company = payload.results?.find((r) => r.siren === siren);
+      const qualiopi = company?.complements?.est_qualiopi;
+      return typeof qualiopi === 'boolean' ? qualiopi : null;
+    } catch {
+      return undefined;
+    }
+  }
+
   // ── Storage helpers ───────────────────────────────────────────────────────
 
   private async upsert(offers: TrainingOffer[]): Promise<number> {
@@ -809,22 +981,30 @@ export class TrainingOffersService {
     return count ?? 0;
   }
 
-  /** RNCP codes currently published, from public.certifications. */
-  private async activeRncpCodes(): Promise<Set<string>> {
-    const codes = new Set<string>();
+  /** Certification codes known to CertifInfo (public.certifications). */
+  private async certificationCodes(): Promise<CertificationCodes> {
+    const codes: CertificationCodes = { rncp: new Set(), rs: new Set() };
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await this.supabase
         .from('certifications')
-        .select('code_rncp')
-        .ilike('etat_libelle', 'publi%')
-        .not('code_rncp', 'is', null)
+        .select('code_rncp, code_rs, etat_libelle')
+        .or('code_rncp.not.is.null,code_rs.not.is.null')
+        .order('id')
         .range(from, from + pageSize - 1);
-      if (error)
+      if (error) {
         throw new Error(`Reading certifications failed: ${error.message}`);
-      for (const row of data ?? []) {
-        const code = text((row as { code_rncp?: unknown }).code_rncp);
-        if (code) codes.add(code.replace(/^RNCP/i, ''));
+      }
+      for (const row of (data ?? []) as {
+        code_rncp: string | null;
+        code_rs: string | null;
+        etat_libelle: string | null;
+      }[]) {
+        const rncp = text(row.code_rncp)?.replace(/^RNCP/i, '');
+        if (rncp && /^publi/i.test(row.etat_libelle ?? ''))
+          codes.rncp.add(rncp);
+        const rs = text(row.code_rs)?.replace(/^RS/i, '');
+        if (rs) codes.rs.add(rs);
       }
       if (!data || data.length < pageSize) break;
     }
