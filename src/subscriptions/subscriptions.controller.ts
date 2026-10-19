@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   Post,
@@ -10,6 +11,7 @@ import {
   AuthUser,
   CurrentUser,
 } from '../auth/decorators/current-user.decorator';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import { SubscriptionsService } from './subscriptions.service';
 
@@ -22,6 +24,13 @@ export class SubscriptionsController {
   @UseGuards(SupabaseJwtGuard)
   sync(@CurrentUser() user: AuthUser) {
     return this.subscriptionsService.syncUser(user.id);
+  }
+
+  /** Subscribers and figures for the admin. */
+  @Get('admin')
+  @UseGuards(AdminGuard)
+  listForAdmin() {
+    return this.subscriptionsService.listForAdmin();
   }
 
   /** RevenueCat server-to-server notifications (renewal, cancel, refund…). */
