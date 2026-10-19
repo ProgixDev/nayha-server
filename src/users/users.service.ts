@@ -1,3 +1,5 @@
+import type { User } from '@supabase/supabase-js';
+import { pageRequest, paginateArray, searchable } from '../common/pagination';
 import {
   ForbiddenException,
   Injectable,
@@ -267,10 +269,15 @@ export class UsersService {
 
   async listAdmin() {
     try {
-      // 1. Fetch all Auth users
-      const { data: authData, error: authError } =
-        await this.supabase.auth.admin.listUsers();
-      const authUsers = !authError && authData?.users ? authData.users : [];
+      // 1. Fetch all Auth users (the API returns them page by page).
+      const authUsers: User[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const { data: authData, error: authError } =
+          await this.supabase.auth.admin.listUsers({ page, perPage: 1000 });
+        if (authError || !authData?.users.length) break;
+        authUsers.push(...authData.users);
+        if (authData.users.length < 1000) break;
+      }
 
       // 2. Fetch all Profiles
       const { data: profiles, error: profileError } = await this.supabase
@@ -332,6 +339,51 @@ export class UsersService {
       this.logger.error(`Error listing admin users: ${err}`);
     }
     return DEFAULT_ADMIN_USERS;
+  }
+
+  /**
+   * One page of the admin user list, after search and filters:
+   * diagnostic (completed / incomplete), plan (paid / free) and journey.
+   */
+  async listAdminPage(query: Record<string, string | undefined>) {
+    const request = pageRequest(query);
+    const q = searchable(query.search).trim();
+    const diagnostic = query.diagnostic;
+    const plan = query.plan;
+    const parcours = (query.parcours ?? '')
+      .toLowerCase()
+      .replace(/[^a-z]/g, '');
+
+    const users = (await this.listAdmin()).filter((u: any) => {
+      if (
+        q &&
+        ![u.name, u.email, u.selected_metier_titre].some((v) =>
+          searchable(v).includes(q),
+        )
+      ) {
+        return false;
+      }
+      const diagnosticsDone =
+        u.diagnostic_vie_completed && u.diagnostic_pro_completed;
+      if (diagnostic === 'completed' && !diagnosticsDone) return false;
+      if (diagnostic === 'incomplete' && diagnosticsDone) return false;
+      if (plan === 'paid' && !u.has_paid) return false;
+      if (plan === 'free' && u.has_paid) return false;
+      if (parcours && parcours !== 'all') {
+        const list: string[] = (
+          u.parcours_types?.length
+            ? u.parcours_types
+            : u.parcours_type
+              ? [u.parcours_type]
+              : []
+        ).map((p: string) => p.toLowerCase().replace(/[^a-z]/g, ''));
+        if (!list.some((p) => p.includes(parcours) || parcours.includes(p))) {
+          return false;
+        }
+      }
+      return true;
+    });
+    return paginateArray(users, request);
   }
 
   async getAdminStats() {

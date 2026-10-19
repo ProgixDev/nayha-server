@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -30,10 +31,11 @@ export class UsersController {
 
   // ── Admin endpoints ────────────────────────────────────────────────────────
 
+  /** ?page=&pageSize=&search=&diagnostic=&plan=&parcours= */
   @Get('admin/all')
   @UseGuards(AdminGuard)
-  listAdmin() {
-    return this.usersService.listAdmin();
+  listAdmin(@Query() query: Record<string, string | undefined>) {
+    return this.usersService.listAdminPage(query);
   }
 
   @Get('admin/stats')
