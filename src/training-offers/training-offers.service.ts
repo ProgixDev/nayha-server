@@ -40,6 +40,7 @@ interface TrainingOffer {
   city: string | null;
   lat: number | null;
   lng: number | null;
+  location_precise: boolean;
   remote: boolean;
   active_sessions: number;
   next_session_at: string | null;
@@ -147,6 +148,25 @@ const PARALLEL_SAVES = 4;
  * must not wipe the catalogue.
  */
 const MIN_SHARE_TO_PRUNE = 0.5;
+const ENTREPRISES_URL = 'https://recherche-entreprises.api.gouv.fr/search';
+/**
+ * Provider sites looked up per import. The register allows 7 calls per
+ * second: 3000 lookups take about 10 minutes. The first run is larger and
+ * is done once by hand (see locateProviders).
+ */
+const SITES_PER_RUN = 3000;
+const SITE_LOOKUPS_PER_SECOND = 5;
+
+interface ProviderSite {
+  siren: string;
+  department_code: string;
+  status: 'site' | 'ambiguous' | 'not_found';
+  siret: string | null;
+  city: string | null;
+  lat: number | null;
+  lng: number | null;
+  checked_at: string;
+}
 
 /**
  * Nightly copy of the training offers into public.training_offers:
@@ -270,6 +290,7 @@ export class TrainingOffersService {
 
   private async syncMcf(runStartedAt: string): Promise<SyncResult> {
     const activeRncp = await this.activeRncpCodes();
+    const sites = await this.knownSites();
     const params = new URLSearchParams({
       select: MCF_FIELDS.join(','),
       where: 'nb_session_active>0',
@@ -317,7 +338,7 @@ export class TrainingOffersService {
           skipped++;
           continue;
         }
-        const offer = this.fromMcf(row, activeRncp, runStartedAt);
+        const offer = this.fromMcf(row, activeRncp, sites, runStartedAt);
         if (!offer) {
           skipped++;
           continue;
@@ -331,12 +352,18 @@ export class TrainingOffersService {
     }
 
     const removed = await this.pruneStale('mcf', runStartedAt, imported);
+    // A failed lookup only leaves some offers "in the department".
+    await this.locateProviders(SITES_PER_RUN).catch((cause: unknown) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.logger.warn(`Training provider sites lookup failed: ${message}`);
+    });
     return { imported, skipped, removed };
   }
 
   private fromMcf(
     row: Record<string, unknown>,
     activeRncp: Set<string>,
+    sites: Map<string, ProviderSite>,
     seenAt: string,
   ): TrainingOffer | null {
     const numero = text(row.numero_formation);
@@ -353,6 +380,12 @@ export class TrainingOffersService {
     const romes = [1, 2, 3, 4, 5]
       .map((i) => text(row[`code_rome_${i}`]))
       .filter((code): code is string => !!code);
+    const siren = siret ? siret.slice(0, 9) : null;
+    const departmentCode = text(row.code_departement);
+    const site =
+      siren && departmentCode
+        ? sites.get(`${siren}:${departmentCode}`)
+        : undefined;
 
     return {
       id: `mcf:${sourceId}`,
@@ -370,9 +403,10 @@ export class TrainingOffersService {
       department: text(row.nom_departement),
       department_code: text(row.code_departement),
       region: text(row.nom_region),
-      city: null,
-      lat: null,
-      lng: null,
+      city: site?.city ?? null,
+      lat: site?.lat ?? null,
+      lng: site?.lng ?? null,
+      location_precise: !!site,
       remote: (num(row.nb_session_a_distance) ?? 0) > 0,
       active_sessions: num(row.nb_session_active) ?? 0,
       next_session_at: null,
@@ -508,6 +542,7 @@ export class TrainingOffersService {
       city: text(address.commune?.nom),
       lat: Array.isArray(coordinates) ? (num(coordinates[1]) ?? null) : null,
       lng: Array.isArray(coordinates) ? (num(coordinates[0]) ?? null) : null,
+      location_precise: Array.isArray(coordinates),
       remote: item.modalite?.entierement_a_distance === true,
       active_sessions: openSessions.length,
       next_session_at: nextStart?.slice(0, 10) ?? null,
@@ -534,6 +569,167 @@ export class TrainingOffersService {
       last_seen_at: seenAt,
       updated_at: seenAt,
     };
+  }
+
+  // ── Provider sites (where Mon Compte Formation offers take place) ─────────
+
+  /** Sites already found, by "siren:department". */
+  private async knownSites(): Promise<Map<string, ProviderSite>> {
+    const sites = new Map<string, ProviderSite>();
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await this.supabase
+        .from('training_provider_sites')
+        .select('*')
+        .eq('status', 'site')
+        .range(from, from + pageSize - 1);
+      if (error) {
+        throw new Error(`Reading provider sites failed: ${error.message}`);
+      }
+      for (const site of (data ?? []) as ProviderSite[]) {
+        sites.set(`${site.siren}:${site.department_code}`, site);
+      }
+      if (!data || data.length < pageSize) break;
+    }
+    return sites;
+  }
+
+  /**
+   * Looks up, in the company register, the sites of providers in the
+   * departments where they give offers, then copies the sites found onto
+   * the offers. Returns how many pairs were looked up.
+   */
+  async locateProviders(limit: number): Promise<number> {
+    const { data, error } = await this.supabase.rpc(
+      'training_provider_sites_to_check',
+      { p_limit: limit },
+    );
+    if (error) throw new Error(`Listing providers failed: ${error.message}`);
+    const pairs = (data ?? []) as {
+      siren: string;
+      department_code: string;
+      provider_name: string | null;
+      sirets: string[] | null;
+    }[];
+
+    let pending: ProviderSite[] = [];
+    const save = async () => {
+      if (!pending.length) return;
+      const rows = pending;
+      pending = [];
+      await withRetry('Saving provider sites', async () => {
+        const { error: saveError } = await this.supabase
+          .from('training_provider_sites')
+          .upsert(rows, { onConflict: 'siren,department_code' });
+        if (saveError) throw new Error(saveError.message);
+      });
+    };
+
+    // A few lookups at a time, at most SITE_LOOKUPS_PER_SECOND per second.
+    for (let i = 0; i < pairs.length; i += SITE_LOOKUPS_PER_SECOND) {
+      const started = Date.now();
+      const found = await Promise.all(
+        pairs
+          .slice(i, i + SITE_LOOKUPS_PER_SECOND)
+          .map((pair) => this.findProviderSite(pair)),
+      );
+      for (const site of found) if (site) pending.push(site);
+      if (pending.length >= 100) await save();
+      const wait = 1000 - (Date.now() - started);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    await save();
+
+    const { data: updated, error: applyError } = await this.supabase.rpc(
+      'apply_training_provider_sites',
+    );
+    if (applyError) {
+      throw new Error(`Applying provider sites failed: ${applyError.message}`);
+    }
+    this.logger.log(
+      `Training provider sites: ${pairs.length} looked up, ${String(updated)} offers located`,
+    );
+    return pairs.length;
+  }
+
+  /**
+   * The register is searched by name within the department (a search by
+   * siren does not list sites), then only the provider's own open sites
+   * are kept. One site, or the offer's own siret among several: located.
+   * Returns null when the register could not be reached (tried next run).
+   */
+  private async findProviderSite(pair: {
+    siren: string;
+    department_code: string;
+    provider_name: string | null;
+    sirets: string[] | null;
+  }): Promise<ProviderSite | null> {
+    const checkedAt = new Date().toISOString();
+    const result = (
+      status: ProviderSite['status'],
+      site?: {
+        siret: string;
+        libelle_commune?: string | null;
+        latitude?: string | null;
+        longitude?: string | null;
+      },
+    ): ProviderSite => ({
+      siren: pair.siren,
+      department_code: pair.department_code,
+      status,
+      siret: site?.siret ?? null,
+      city: site?.libelle_commune
+        ? site.libelle_commune
+            .toLowerCase()
+            .replace(/(^|[\s'-])\p{L}/gu, (letter) => letter.toUpperCase())
+        : null,
+      lat: num(site?.latitude),
+      lng: num(site?.longitude),
+      checked_at: checkedAt,
+    });
+    if (!pair.provider_name) return result('not_found');
+
+    const params = new URLSearchParams({
+      q: pair.provider_name,
+      departement: pair.department_code,
+      per_page: '25',
+    });
+    let payload: {
+      results?: {
+        siren?: string;
+        matching_etablissements?: {
+          siret: string;
+          etat_administratif?: string;
+          libelle_commune?: string | null;
+          latitude?: string | null;
+          longitude?: string | null;
+        }[];
+      }[];
+    };
+    try {
+      payload = await withRetry('Company register', async () => {
+        const response = await fetch(`${ENTREPRISES_URL}?${params}`);
+        if (response.status === 429 || response.status >= 500) {
+          throw new Error(`Company register busy (${response.status})`);
+        }
+        if (!response.ok) return {};
+        return (await response.json()) as typeof payload;
+      });
+    } catch {
+      return null;
+    }
+
+    const company = payload.results?.find((r) => r.siren === pair.siren);
+    const open = (company?.matching_etablissements ?? []).filter(
+      (site) =>
+        site.etat_administratif === 'A' &&
+        num(site.latitude) != null &&
+        num(site.longitude) != null,
+    );
+    if (open.length === 1) return result('site', open[0]);
+    const own = open.filter((site) => pair.sirets?.includes(site.siret));
+    if (own.length === 1) return result('site', own[0]);
+    return result(open.length > 1 ? 'ambiguous' : 'not_found');
   }
 
   // ── Storage helpers ───────────────────────────────────────────────────────
