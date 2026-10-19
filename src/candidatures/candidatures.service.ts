@@ -4,6 +4,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateCandidatureDto } from './dto/create-candidature.dto';
 import { UpdateCandidatureDto } from './dto/update-candidature.dto';
 import { CandidatureActionDto } from './dto/candidature-action.dto';
+import { Paginated, pageRequest } from '../common/pagination';
 
 export interface CandidatureStats {
   totalEnvoyees: number;
@@ -55,6 +56,67 @@ export class CandidaturesService {
     }));
   }
 
+  /**
+   * One page of every candidature, newest first, with the user's name.
+   * ?page=&pageSize=&search= (company, job or user name)&statut=
+   */
+  async listAdminPage(
+    query: Record<string, string | undefined>,
+  ): Promise<Paginated<Record<string, unknown>>> {
+    const request = pageRequest(query);
+    const search = (query.search ?? '').trim();
+    const statut = query.statut;
+
+    let builder = this.supabase
+      .from('candidatures')
+      .select('*', { count: 'exact' });
+    if (statut && statut !== 'all') builder = builder.eq('statut', statut);
+    if (search) {
+      // Characters that would break the PostgREST `or` syntax are dropped.
+      const term = search.replace(/[,()*%\\]/g, ' ').trim();
+      if (term) {
+        const { data: matchingUsers } = await this.supabase
+          .from('user_profiles')
+          .select('id')
+          .ilike('name', `%${term}%`)
+          .limit(500);
+        const conditions = [
+          `entreprise.ilike.%${term}%`,
+          `poste.ilike.%${term}%`,
+        ];
+        const ids = (matchingUsers ?? []).map((u) => u.id as string);
+        if (ids.length) conditions.push(`user_id.in.(${ids.join(',')})`);
+        builder = builder.or(conditions.join(','));
+      }
+    }
+
+    const { data, count, error } = await builder
+      .order('date_envoi', { ascending: false })
+      .range(request.from, request.to);
+    if (error) throw new Error(error.message);
+
+    const rows = data ?? [];
+    const userIds = [...new Set(rows.map((c) => c.user_id as string))];
+    const userMap = new Map<string, string>();
+    if (userIds.length) {
+      const { data: users } = await this.supabase
+        .from('user_profiles')
+        .select('id, name')
+        .in('id', userIds);
+      for (const u of users ?? []) userMap.set(u.id, u.name);
+    }
+
+    return {
+      items: rows.map((c) => ({
+        ...c,
+        user_name: userMap.get(c.user_id) || 'Utilisatrice',
+      })),
+      total: count ?? 0,
+      page: request.page,
+      pageSize: request.pageSize,
+    };
+  }
+
   async getAdminStats() {
     const { data: candidatures, error } = await this.supabase
       .from('candidatures')
@@ -67,14 +129,22 @@ export class CandidaturesService {
     const withResponse = all.filter(
       (c) => c.statut !== 'envoyee' && c.statut !== 'a_relancer',
     ).length;
-    const tauxReponse = total > 0 ? Math.round((withResponse / total) * 100) / 100 : 0;
+    const tauxReponse =
+      total > 0 ? Math.round((withResponse / total) * 100) / 100 : 0;
     const enCours = all.filter(
-      (c) => c.statut === 'envoyee' || c.statut === 'en_attente' || c.statut === 'a_relancer',
+      (c) =>
+        c.statut === 'envoyee' ||
+        c.statut === 'en_attente' ||
+        c.statut === 'a_relancer',
     ).length;
     const entretiensObtenus = all.filter(
       (c) => c.statut === 'entretien' || c.statut === 'acceptee',
     ).length;
     const acceptees = all.filter((c) => c.statut === 'acceptee').length;
+    const byStatut: Record<string, number> = {};
+    for (const c of all) {
+      byStatut[c.statut] = (byStatut[c.statut] ?? 0) + 1;
+    }
 
     return {
       total,
@@ -82,6 +152,7 @@ export class CandidaturesService {
       enCours,
       entretiensObtenus,
       acceptees,
+      byStatut,
     };
   }
 

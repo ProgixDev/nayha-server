@@ -24,10 +24,11 @@ import { CandidatureActionDto } from './dto/candidature-action.dto';
 export class CandidaturesController {
   constructor(private readonly candidaturesService: CandidaturesService) {}
 
+  /** ?page=&pageSize=&search=&statut= */
   @Get('admin/all')
   @UseGuards(AdminGuard)
-  listAdmin() {
-    return this.candidaturesService.listAdmin();
+  listAdmin(@Query() query: Record<string, string | undefined>) {
+    return this.candidaturesService.listAdminPage(query);
   }
 
   @Get('admin/stats')
