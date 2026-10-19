@@ -50,6 +50,8 @@ interface CatalogueOffer {
   department: string | null;
   department_code: string | null;
   city: string | null;
+  /** true: city is the training site; false: only the department is known. */
+  location_precise: boolean;
   remote: boolean;
   active_sessions: number;
   next_session_at: string | null;
@@ -1102,6 +1104,7 @@ export class ReconversionService {
       qualiopiVerified: offer.qualiopi != null,
       isDistance: summary.remote,
       distanceKm: summary.distanceKm,
+      localisationPrecise: offer.location_precise,
       duree: duree ?? 'Durée selon parcours',
       rythme: summary.apprentissage
         ? 'Alternance / Formation continue'
