@@ -19,6 +19,7 @@ import { HealthController } from './health.controller';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { SupportModule } from './support/support.module';
 import { PushModule } from './push/push.module';
+import { TrainingOffersModule } from './training-offers/training-offers.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { PushModule } from './push/push.module';
     SubscriptionsModule,
     SupportModule,
     PushModule,
+    TrainingOffersModule,
   ],
   controllers: [HealthController],
 })
