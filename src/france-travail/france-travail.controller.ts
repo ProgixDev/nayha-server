@@ -1,4 +1,13 @@
-import { Controller, Get, Param, Post, Query, Body } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { FranceTravailService } from './france-travail.service';
 
 @Controller('ft')
@@ -8,6 +17,7 @@ export class FranceTravailController {
   // ---- SYNC (manual trigger) ----
 
   @Post('sync')
+  @UseGuards(AdminGuard)
   async syncAll() {
     const results = await this.ftService.syncAll();
     return { status: 'ok', synced: results };
@@ -165,4 +175,3 @@ export class FranceTravailController {
     return this.ftService.getCertification(parseInt(id));
   }
 }
-

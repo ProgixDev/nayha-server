@@ -11,6 +11,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
@@ -30,21 +31,25 @@ export class UsersController {
   // ── Admin endpoints ────────────────────────────────────────────────────────
 
   @Get('admin/all')
+  @UseGuards(AdminGuard)
   listAdmin() {
     return this.usersService.listAdmin();
   }
 
   @Get('admin/stats')
+  @UseGuards(AdminGuard)
   getAdminStats() {
     return this.usersService.getAdminStats();
   }
 
   @Get('admin/:id')
+  @UseGuards(AdminGuard)
   getUserById(@Param('id') id: string) {
     return this.usersService.getUserById(id);
   }
 
   @Patch('admin/:id/block')
+  @UseGuards(AdminGuard)
   toggleBlockUser(
     @Param('id') id: string,
     @Body('is_blocked') isBlocked: boolean,

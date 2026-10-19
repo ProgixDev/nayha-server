@@ -8,7 +8,9 @@ import {
   Post,
   Put,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { BlogService } from './blog.service';
 import { CreateBlogArticleDto } from './dto/create-blog-article.dto';
 import { UpdateBlogArticleDto } from './dto/update-blog-article.dto';
@@ -51,24 +53,28 @@ export class BlogController {
   // ── Admin Endpoints ────────────────────────────────────────────────────────
 
   @Get('admin/articles')
+  @UseGuards(AdminGuard)
   async listAdminArticles() {
     const articles = await this.blogService.listAdmin();
     return { articles };
   }
 
   @Get('admin/stats')
+  @UseGuards(AdminGuard)
   async getAdminStats() {
     const stats = await this.blogService.getStats();
     return { stats };
   }
 
   @Post('admin/articles')
+  @UseGuards(AdminGuard)
   async createArticle(@Body() dto: CreateBlogArticleDto) {
     const article = await this.blogService.create(dto);
     return { article };
   }
 
   @Put('admin/articles/:id')
+  @UseGuards(AdminGuard)
   async updateArticlePut(
     @Param('id') id: string,
     @Body() dto: UpdateBlogArticleDto,
@@ -78,6 +84,7 @@ export class BlogController {
   }
 
   @Patch('admin/articles/:id')
+  @UseGuards(AdminGuard)
   async updateArticlePatch(
     @Param('id') id: string,
     @Body() dto: UpdateBlogArticleDto,
@@ -87,6 +94,7 @@ export class BlogController {
   }
 
   @Delete('admin/articles/:id')
+  @UseGuards(AdminGuard)
   async deleteArticle(@Param('id') id: string) {
     return this.blogService.remove(id);
   }

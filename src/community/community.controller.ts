@@ -8,6 +8,7 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -37,19 +38,13 @@ export class CommunityController {
 
   @Post()
   @UseGuards(SupabaseJwtGuard)
-  createPost(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreatePostDto,
-  ) {
+  createPost(@CurrentUser() user: AuthUser, @Body() dto: CreatePostDto) {
     return this.communityService.createPost(user.id, dto);
   }
 
   @Post(':id/react')
   @UseGuards(SupabaseJwtGuard)
-  toggleReact(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-  ) {
+  toggleReact(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.communityService.toggleReact(user.id, id);
   }
 
@@ -86,27 +81,34 @@ export class CommunityController {
   // ── Admin Dashboard Endpoints ───────────────────────────────────────────────
 
   @Get('admin/posts')
+  @UseGuards(AdminGuard)
   async getAdminPosts() {
     const posts = await this.communityService.getAdminPosts();
     return { posts };
   }
 
   @Get('admin/reports')
+  @UseGuards(AdminGuard)
   async getAdminReports() {
     const reports = await this.communityService.getAdminReports();
     return { reports };
   }
 
   @Put('admin/posts/:id/moderate')
+  @UseGuards(AdminGuard)
   async moderatePost(
     @Param('id') id: string,
     @Body() body?: { is_moderated?: boolean },
   ) {
-    const post = await this.communityService.moderatePost(id, body?.is_moderated);
+    const post = await this.communityService.moderatePost(
+      id,
+      body?.is_moderated,
+    );
     return { post };
   }
 
   @Delete('admin/posts/:id')
+  @UseGuards(AdminGuard)
   async deletePost(@Param('id') id: string) {
     return this.communityService.deletePost(id);
   }

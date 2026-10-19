@@ -7,7 +7,9 @@ import {
   Param,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { AdminSettingsService } from './admin-settings.service';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
@@ -29,31 +31,37 @@ export class AdminSettingsController {
   }
 
   @Get('users')
+  @UseGuards(AdminGuard)
   getUsers() {
     return this.adminSettingsService.getUsers();
   }
 
   @Post('users')
+  @UseGuards(AdminGuard)
   addUser(@Body() dto: CreateAdminUserDto) {
     return this.adminSettingsService.addUser(dto);
   }
 
   @Patch('users/:id')
+  @UseGuards(AdminGuard)
   updateUser(@Param('id') id: string, @Body() dto: UpdateAdminUserDto) {
     return this.adminSettingsService.updateUser(id, dto);
   }
 
   @Delete('users/:id')
+  @UseGuards(AdminGuard)
   deleteUser(@Param('id') id: string) {
     return this.adminSettingsService.deleteUser(id);
   }
 
   @Get('permissions')
+  @UseGuards(AdminGuard)
   getPermissions() {
     return this.adminSettingsService.getPermissions();
   }
 
   @Patch('permissions/:role')
+  @UseGuards(AdminGuard)
   updatePermissions(
     @Param('role') role: string,
     @Body() dto: UpdatePermissionsDto,

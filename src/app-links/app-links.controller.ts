@@ -6,7 +6,9 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { AppLinksService } from './app-links.service';
 import { UpdateAppLinkDto } from './dto/update-app-link.dto';
 
@@ -24,6 +26,7 @@ export class AppLinksController {
   // ── Admin Endpoints for Admin Dashboard ────────────────────────────────────
 
   @Get('admin-settings/links')
+  @UseGuards(AdminGuard)
   getAdminLinks(
     @Query('module') module?: string,
     @Query('step') step?: string,
@@ -33,16 +36,19 @@ export class AppLinksController {
   }
 
   @Get('admin-settings/links/categories')
+  @UseGuards(AdminGuard)
   getCategories() {
     return this.appLinksService.getCategories();
   }
 
   @Patch('admin-settings/links/:key')
+  @UseGuards(AdminGuard)
   updateLink(@Param('key') key: string, @Body() dto: UpdateAppLinkDto) {
     return this.appLinksService.updateLink(key, dto);
   }
 
   @Post('admin-settings/links/:key/reset')
+  @UseGuards(AdminGuard)
   resetLink(@Param('key') key: string) {
     return this.appLinksService.resetLink(key);
   }

@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { AdminGuard } from '../auth/guards/admin.guard';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
 import {
   AuthUser,
@@ -24,11 +25,13 @@ export class CandidaturesController {
   constructor(private readonly candidaturesService: CandidaturesService) {}
 
   @Get('admin/all')
+  @UseGuards(AdminGuard)
   listAdmin() {
     return this.candidaturesService.listAdmin();
   }
 
   @Get('admin/stats')
+  @UseGuards(AdminGuard)
   getAdminStats() {
     return this.candidaturesService.getAdminStats();
   }
