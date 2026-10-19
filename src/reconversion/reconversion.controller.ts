@@ -35,9 +35,9 @@ export class ReconversionController {
   }
 
   /**
-   * Certifications RNCP for the selected target occupation.
-   * Koumoul is the primary source; CertifInfo in Supabase is used only when
-   * Koumoul has no certification for this ROME code.
+   * Trainings for the selected target occupation, grouped by certification,
+   * from the imported catalogue (Mon Compte Formation + API Apprentissage).
+   * The live sources (Apprentissage, Koumoul, CertifInfo) are the fallback.
    */
   @Get('formations/:codeRome')
   getFormations(
@@ -51,6 +51,24 @@ export class ReconversionController {
     return this.reconversionService.getFormationsByRome(user.id, codeRome, {
       after,
       source,
+      modalite,
+      rayonKm,
+    });
+  }
+
+  /** Providers of one certification (certificationKey of a result), closest first. */
+  @Get('formations/:codeRome/organismes')
+  getFormationOrganismes(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+    @Query('certification') certification?: string,
+    @Query('after') after?: string,
+    @Query('modalite') modalite?: string,
+    @Query('rayonKm') rayonKm?: string,
+  ) {
+    return this.reconversionService.getFormationOrganismes(user.id, codeRome, {
+      certification,
+      after,
       modalite,
       rayonKm,
     });

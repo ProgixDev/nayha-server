@@ -27,11 +27,58 @@ interface Certification {
   accessibilite_ca: number | null;
 }
 
-type FormationSource = 'apprentissage' | 'koumoul' | 'supabase';
+type FormationSource = 'catalogue' | 'apprentissage' | 'koumoul' | 'supabase';
 
 interface Coordinates {
   latitude: number;
   longitude: number;
+  /** Department of the user's city, e.g. "75" or "2A". */
+  departmentCode?: string | null;
+}
+
+/** Row of public.training_offers (filled by the nightly import). */
+interface CatalogueOffer {
+  id: string;
+  source: 'mcf' | 'apprentissage';
+  title: string;
+  provider_name: string | null;
+  siret: string | null;
+  code_rncp: string | null;
+  code_rs: string | null;
+  certification_title: string | null;
+  level: string | null;
+  department: string | null;
+  department_code: string | null;
+  city: string | null;
+  remote: boolean;
+  active_sessions: number;
+  next_session_at: string | null;
+  price_min: number | null;
+  price_max: number | null;
+  hours_min: number | null;
+  hours_max: number | null;
+  cpf_eligible: boolean;
+  apprentissage: boolean;
+  qualiopi: boolean | null;
+  certification_active: boolean | null;
+}
+
+/** What the search functions say about one certification or provider. */
+interface CatalogueSummary {
+  groupKey: string;
+  providers: number | null;
+  distanceKm: number | null;
+  cpfEligible: boolean;
+  apprentissage: boolean;
+  qualiopi: boolean;
+  remote: boolean;
+}
+
+interface CatalogueCertification {
+  code_rncp: string;
+  accessibilite_vae: number | null;
+  accessibilite_fc: number | null;
+  accessibilite_ca: number | null;
 }
 
 interface KoumoulPage {
@@ -308,6 +355,8 @@ export class ReconversionService {
     }
 
     switch (source) {
+      case 'mcf':
+        return this.getMcfFormationDetail(actualId);
       case 'apprentissage':
         return this.getApprentissageFormationDetail(codeRome, actualId);
       case 'koumoul':
@@ -381,6 +430,34 @@ export class ReconversionService {
       modalite: options.modalite ?? 'all',
       rayonKm,
     });
+
+    // The imported catalogue answers first. The live sources stay as a
+    // fallback when it has nothing for this job (e.g. certifications that
+    // have no training offer with an open session).
+    if (requestedSource == null || requestedSource === 'catalogue') {
+      try {
+        const cataloguePage = await this.getCatalogueFormationPage(codeRome, {
+          after: options.after,
+          modalite: options.modalite,
+          rayonKm,
+          userCoordinates,
+        });
+        if (
+          cataloguePage.results.length > 0 ||
+          requestedSource === 'catalogue' ||
+          (options.after != null && options.after.length > 0)
+        ) {
+          this.logFormationTrace('mobile-response', cataloguePage);
+          this.logFormationsPage(codeRome, cataloguePage, options.modalite);
+          return cataloguePage;
+        }
+      } catch (error) {
+        if (requestedSource === 'catalogue') throw error;
+        this.logger.warn(
+          `[formations] catalogue unavailable for ${codeRome}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
 
     let page: FormationPage;
 
@@ -489,8 +566,7 @@ export class ReconversionService {
 
     const target = targetRow.data as Record<string, any>;
     const domain = target.domaineProfessionnel as
-      | { code?: string; libelle?: string }
-      | undefined;
+      { code?: string; libelle?: string } | undefined;
     const targetFormacodes = (
       Array.isArray(target.formacodes) ? target.formacodes : []
     ).reduce((formacodes: Map<string, string>, item: any) => {
@@ -544,8 +620,8 @@ export class ReconversionService {
           if (code) formacodes.set(code, String(item?.libelle ?? ''));
           return formacodes;
         }, new Map<string, string>());
-        const sharedFormacodes = [...candidateFormacodes.keys()].filter((code) =>
-          targetFormacodes.has(code),
+        const sharedFormacodes = [...candidateFormacodes.keys()].filter(
+          (code) => targetFormacodes.has(code),
         );
         const specificSharedFormacodes = sharedFormacodes.filter((code) =>
           /sécurité|cybersécurité|réseau/i.test(
@@ -648,6 +724,432 @@ export class ReconversionService {
     };
   }
 
+  /** Detail of one Mon Compte Formation offer, checked live with the source. */
+  private async getMcfFormationDetail(
+    actualId: string,
+  ): Promise<Record<string, unknown>> {
+    const id = `mcf:${actualId}`;
+    const { data, error } = await this.supabase
+      .from('training_offers')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle<CatalogueOffer>();
+    if (error) {
+      throw new Error(
+        `Catalogue des formations indisponible: ${error.message}`,
+      );
+    }
+    if (!data)
+      throw new NotFoundException('Cette formation n’est plus proposée.');
+
+    // Ids are "<numero>:<department>". Without the department the row
+    // cannot be matched safely, so it is shown as imported.
+    const separator = actualId.lastIndexOf(':');
+    const live =
+      separator > 0
+        ? await this.findLiveMcfOffer(
+            actualId.slice(0, separator),
+            actualId.slice(separator + 1),
+          )
+        : undefined;
+    if (live === null) {
+      // Closed since the last import: never show it again.
+      await this.supabase.from('training_offers').delete().eq('id', id);
+      throw new NotFoundException('Cette formation n’est plus proposée.');
+    }
+
+    const numberOrNull = (value: unknown) =>
+      value == null || value === '' || !Number.isFinite(Number(value))
+        ? null
+        : Number(value);
+    const offer: CatalogueOffer = live
+      ? {
+          ...data,
+          active_sessions: Number(live['nb_session_active']),
+          remote: Number(live['nb_session_a_distance'] ?? 0) > 0,
+          price_min: numberOrNull(live['frais_ttc_tot_min']),
+          price_max: numberOrNull(live['frais_ttc_tot_max']),
+          hours_min: numberOrNull(live['nombre_heures_total_min']),
+          hours_max: numberOrNull(live['nombre_heures_total_max']),
+        }
+      : data;
+
+    const certifications = await this.catalogueCertifications([offer]);
+    return {
+      ...this.catalogueOfferToFormation(offer, certifications, {
+        groupKey: this.catalogueGroupKey(offer),
+        providers: null,
+        distanceKm: null,
+        cpfEligible: offer.cpf_eligible,
+        apprentissage: offer.apprentissage,
+        qualiopi: offer.qualiopi === true,
+        remote: offer.remote,
+      }),
+      verifieEnDirect: live != null,
+    };
+  }
+
+  /**
+   * The offer as Mon Compte Formation shows it now: its row when it still
+   * has an open session, null when it has none, undefined when the source
+   * cannot be reached.
+   */
+  private async findLiveMcfOffer(
+    numero: string,
+    department: string,
+  ): Promise<Record<string, unknown> | null | undefined> {
+    const quote = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
+    const query = new URLSearchParams({
+      select:
+        'nb_session_active,nb_session_a_distance,frais_ttc_tot_min,frais_ttc_tot_max,nombre_heures_total_min,nombre_heures_total_max',
+      where: [
+        `numero_formation=${quote(numero)}`,
+        department === 'na'
+          ? 'code_departement is null'
+          : `code_departement=${quote(department)}`,
+      ].join(' and '),
+      limit: '1',
+    });
+    try {
+      const response = await fetch(
+        `${ReconversionService.mcfCatalogueUrl}?${query.toString()}`,
+      );
+      if (!response.ok) return undefined;
+      const payload = (await response.json()) as {
+        results?: Record<string, unknown>[];
+      };
+      const row = payload.results?.[0];
+      return row && Number(row['nb_session_active'] ?? 0) > 0 ? row : null;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * One page of certifications for a job, from the imported catalogue. Each
+   * result is the best offer of one certification (closest first when the
+   * user's place is known) with how many providers give it.
+   */
+  private async getCatalogueFormationPage(
+    codeRome: string,
+    options: {
+      after?: string;
+      modalite?: string;
+      rayonKm: number | null;
+      userCoordinates: Coordinates | null;
+    },
+  ): Promise<FormationPage> {
+    const offset = this.parseOffsetCursor(options.after);
+    const pageSize = ReconversionService.formationsPageSize;
+    const { data, error } = await this.supabase.rpc('search_training_groups', {
+      p_rome: codeRome,
+      p_lat: options.userCoordinates?.latitude ?? null,
+      p_lng: options.userCoordinates?.longitude ?? null,
+      p_radius_km: options.rayonKm,
+      p_department: options.userCoordinates?.departmentCode ?? null,
+      p_modalite: this.catalogueModalite(options.modalite),
+      p_limit: pageSize,
+      p_offset: offset,
+    });
+    if (error) {
+      throw new Error(
+        `Catalogue des formations indisponible: ${error.message}`,
+      );
+    }
+
+    const groups = (data ?? []) as {
+      group_key: string;
+      offer_id: string;
+      providers: number;
+      nearest_km: number | null;
+      cpf_eligible: boolean;
+      apprentissage: boolean;
+      qualiopi: boolean;
+      remote: boolean;
+      total_groups: number;
+    }[];
+    const offers = await this.catalogueOffersById(
+      groups.map((g) => g.offer_id),
+    );
+    const certifications = await this.catalogueCertifications([
+      ...offers.values(),
+    ]);
+
+    const results = groups.flatMap((group) => {
+      const offer = offers.get(group.offer_id);
+      if (!offer) return [];
+      return [
+        this.catalogueOfferToFormation(offer, certifications, {
+          groupKey: group.group_key,
+          providers: group.providers,
+          distanceKm: group.nearest_km,
+          cpfEligible: group.cpf_eligible,
+          apprentissage: group.apprentissage,
+          qualiopi: group.qualiopi,
+          remote: group.remote,
+        }),
+      ];
+    });
+    const total = groups[0]?.total_groups ?? 0;
+    const nextOffset = offset + groups.length;
+    return {
+      source: 'catalogue',
+      results,
+      nextCursor: nextOffset < total ? String(nextOffset) : null,
+    };
+  }
+
+  /**
+   * The providers of one certification for a job, closest first. One
+   * provider giving it on both sources is shown once with both badges.
+   */
+  async getFormationOrganismes(
+    userId: string,
+    rawCodeRome: string,
+    options: {
+      certification?: string;
+      after?: string;
+      modalite?: string;
+      rayonKm?: string;
+    },
+  ) {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const groupKey = options.certification?.trim();
+    if (!groupKey) throw new BadRequestException('Certification requise');
+    const offset = this.parseOffsetCursor(options.after);
+    const rayonKm = this.parseRayonKm(options.rayonKm);
+    const userCoordinates =
+      rayonKm == null ? null : await this.getUserCityCoordinates(userId);
+
+    const { data, error } = await this.supabase.rpc(
+      'search_training_group_offers',
+      {
+        p_rome: codeRome,
+        p_group_key: groupKey,
+        p_lat: userCoordinates?.latitude ?? null,
+        p_lng: userCoordinates?.longitude ?? null,
+        p_radius_km: rayonKm,
+        p_department: userCoordinates?.departmentCode ?? null,
+        p_modalite: this.catalogueModalite(options.modalite),
+        p_limit: ReconversionService.formationsPageSize,
+        p_offset: offset,
+      },
+    );
+    if (error) {
+      throw new Error(
+        `Catalogue des formations indisponible: ${error.message}`,
+      );
+    }
+
+    const rows = (data ?? []) as {
+      offer_id: string;
+      distance_km: number | null;
+      cpf_eligible: boolean;
+      apprentissage: boolean;
+      qualiopi: boolean;
+      total_offers: number;
+    }[];
+    const offers = await this.catalogueOffersById(rows.map((r) => r.offer_id));
+    const certifications = await this.catalogueCertifications([
+      ...offers.values(),
+    ]);
+    const results = rows.flatMap((row) => {
+      const offer = offers.get(row.offer_id);
+      if (!offer) return [];
+      return [
+        this.catalogueOfferToFormation(offer, certifications, {
+          groupKey,
+          providers: null,
+          distanceKm: row.distance_km,
+          cpfEligible: row.cpf_eligible,
+          apprentissage: row.apprentissage,
+          qualiopi: row.qualiopi,
+          remote: offer.remote,
+        }),
+      ];
+    });
+    const total = rows[0]?.total_offers ?? 0;
+    const nextOffset = offset + rows.length;
+    return {
+      source: 'catalogue',
+      certification: groupKey,
+      total,
+      results,
+      nextCursor: nextOffset < total ? String(nextOffset) : null,
+    };
+  }
+
+  private async catalogueOffersById(
+    ids: string[],
+  ): Promise<Map<string, CatalogueOffer>> {
+    if (ids.length === 0) return new Map();
+    const { data, error } = await this.supabase
+      .from('training_offers')
+      .select('*')
+      .in('id', ids);
+    if (error) {
+      throw new Error(
+        `Catalogue des formations indisponible: ${error.message}`,
+      );
+    }
+    return new Map(
+      ((data ?? []) as CatalogueOffer[]).map((offer) => [offer.id, offer]),
+    );
+  }
+
+  /** Access routes (VAE, formation continue, alternance) of the certifications. */
+  private async catalogueCertifications(
+    offers: CatalogueOffer[],
+  ): Promise<Map<string, CatalogueCertification>> {
+    const codes = [
+      ...new Set(
+        offers
+          .map((offer) => offer.code_rncp)
+          .filter((code): code is string => !!code),
+      ),
+    ];
+    if (codes.length === 0) return new Map();
+    const { data } = await this.supabase
+      .from('certifications')
+      .select(
+        'code_rncp, accessibilite_vae, accessibilite_fc, accessibilite_ca',
+      )
+      .in('code_rncp', codes);
+    return new Map(
+      ((data ?? []) as CatalogueCertification[]).map((row) => [
+        row.code_rncp,
+        row,
+      ]),
+    );
+  }
+
+  private catalogueGroupKey(offer: CatalogueOffer): string {
+    if (offer.code_rncp) return `rncp:${offer.code_rncp}`;
+    if (offer.code_rs) return `rs:${offer.code_rs}`;
+    return `titre:${offer.title.toLowerCase()}`;
+  }
+
+  /** Same contract as the other sources, so the mobile list is unchanged. */
+  private catalogueOfferToFormation(
+    offer: CatalogueOffer,
+    certifications: Map<string, CatalogueCertification>,
+    summary: CatalogueSummary,
+  ): Record<string, unknown> {
+    const certification = offer.code_rncp
+      ? certifications.get(offer.code_rncp)
+      : undefined;
+    const range = (
+      rawMin: number | null,
+      rawMax: number | null,
+      unit: string,
+    ) => {
+      // 0 means "not given" in the source.
+      const min = rawMin != null && rawMin > 0 ? rawMin : null;
+      const max = rawMax != null && rawMax > 0 ? rawMax : null;
+      if (min == null && max == null) return null;
+      const format = (value: number) =>
+        `${Math.round(value).toLocaleString('fr-FR')}${unit}`;
+      if (min == null || max == null || min === max) {
+        return format((min ?? max)!);
+      }
+      return `${format(min)} à ${format(max)}`;
+    };
+    const duree = range(offer.hours_min, offer.hours_max, ' h');
+    const prix = range(offer.price_min, offer.price_max, ' €');
+    const department = offer.department
+      ? offer.department_code
+        ? `${offer.department} (${offer.department_code})`
+        : offer.department
+      : null;
+    const lieu =
+      [
+        offer.city,
+        offer.city?.toLowerCase() === offer.department?.toLowerCase()
+          ? offer.department_code
+          : department,
+      ]
+        .filter(Boolean)
+        .join(', ') || 'Lieu à confirmer';
+    const prochaineSession = offer.next_session_at
+      ? `Prochaine session : ${new Date(offer.next_session_at).toLocaleDateString('fr-FR')}`
+      : offer.active_sessions > 0
+        ? `${offer.active_sessions} session${offer.active_sessions > 1 ? 's' : ''} ouverte${offer.active_sessions > 1 ? 's' : ''}`
+        : 'Aucune session à venir publiée';
+
+    return {
+      id: offer.id,
+      source: offer.source,
+      certificationKey: summary.groupKey,
+      organismesCount: summary.providers,
+      siret: offer.siret ?? '',
+      nomOrganisme: offer.provider_name ?? 'Organisme de formation',
+      titreFormation: offer.certification_title ?? offer.title,
+      intituleOffre: offer.title,
+      certificationCode: offer.code_rncp
+        ? `RNCP${offer.code_rncp}`
+        : offer.code_rs
+          ? `RS${offer.code_rs}`
+          : '',
+      niveauCertification: offer.level ?? 'Niveau non renseigné',
+      dateFinEnregistrement: '',
+      dateLimiteDelivrance: '',
+      isCertificationActive: offer.certification_active === true,
+      rncpStatusVerified: offer.certification_active != null,
+      // Listed on Mon Compte Formation with an open session = CPF offer.
+      cpfEligibility: summary.cpfEligible ? 'eligible' : 'to_verify',
+      cpfOfferVerified: summary.cpfEligible,
+      isQualiopi: summary.qualiopi,
+      qualiopiVerified: offer.qualiopi != null,
+      isDistance: summary.remote,
+      distanceKm: summary.distanceKm,
+      duree: duree ?? 'Durée selon parcours',
+      rythme: summary.apprentissage
+        ? 'Alternance / Formation continue'
+        : 'Temps plein / partiel',
+      format: offer.remote
+        ? offer.source === 'apprentissage'
+          ? '100% à distance'
+          : 'À distance possible'
+        : 'Présentiel / Mixte',
+      lieu,
+      prochaineSession,
+      sessions: [],
+      prix,
+      prixMin: offer.price_min,
+      prixMax: offer.price_max,
+      contactEmail: '',
+      contactTelephone: '',
+      contenu: '',
+      objectif: '',
+      blocsCompetences: [],
+      blocsCompetencesCodes: [],
+      formationContinue:
+        summary.cpfEligible || (certification?.accessibilite_fc ?? 0) > 0,
+      alternanceAccessible:
+        summary.apprentissage || (certification?.accessibilite_ca ?? 0) > 0,
+      vaeAccessible: (certification?.accessibilite_vae ?? 0) > 0,
+    };
+  }
+
+  private catalogueModalite(raw: string | undefined): string | null {
+    const value = raw?.toLowerCase().trim();
+    if (!value || value === 'all' || value === 'toutes') return null;
+    return value;
+  }
+
+  private parseOffsetCursor(after: string | undefined): number {
+    if (after == null || after.length === 0) return 0;
+    const offset = Number.parseInt(after, 10);
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      String(offset) !== after
+    ) {
+      throw new BadRequestException('Curseur de pagination invalide');
+    }
+    return offset;
+  }
+
   /** Emits diagnostic metadata only; no user or contact data. */
   private logFormationsPage(
     codeRome: string,
@@ -700,9 +1202,7 @@ export class ReconversionService {
   /** Opt-in local trace. Upstream catalogues may contain public contact data. */
   private logFormationTrace(stage: string, payload: unknown): void {
     if (!this.formationsApiDebug) return;
-    this.logger.log(
-      `[formations-trace][${stage}] ${JSON.stringify(payload)}`,
-    );
+    this.logger.log(`[formations-trace][${stage}] ${JSON.stringify(payload)}`);
   }
 
   private filterFormationsByModalite(
@@ -773,20 +1273,32 @@ export class ReconversionService {
       return cached.value;
     }
 
-    const query = new URLSearchParams({ q: city, limit: '1', type: 'municipality' });
+    const query = new URLSearchParams({
+      q: city,
+      limit: '1',
+      type: 'municipality',
+    });
     const response = await fetch(
       `${ReconversionService.adresseApiUrl}?${query.toString()}`,
     );
     if (!response.ok) {
-      throw new Error('Le service de localisation est momentanément indisponible.');
+      throw new Error(
+        'Le service de localisation est momentanément indisponible.',
+      );
     }
 
     const payload = (await response.json()) as {
-      features?: Array<{ geometry?: { coordinates?: unknown } }>;
+      features?: Array<{
+        geometry?: { coordinates?: unknown };
+        properties?: { context?: string };
+      }>;
     };
-    const coordinates = this.coordinatesFromUnknown(
-      payload.features?.[0]?.geometry?.coordinates,
-    );
+    const feature = payload.features?.[0];
+    const point = this.coordinatesFromUnknown(feature?.geometry?.coordinates);
+    // context reads "75, Paris, Île-de-France": the department comes first.
+    const departmentCode =
+      feature?.properties?.context?.split(',')[0]?.trim() || null;
+    const coordinates = point ? { ...point, departmentCode } : null;
     if (coordinates == null) {
       throw new BadRequestException(
         'La ville enregistrée est introuvable. Vérifiez son orthographe.',
@@ -799,7 +1311,9 @@ export class ReconversionService {
     return coordinates;
   }
 
-  private extractOfferCoordinates(item: Record<string, any>): Coordinates | null {
+  private extractOfferCoordinates(
+    item: Record<string, any>,
+  ): Coordinates | null {
     const lieu = item.lieu ?? {};
     return (
       this.coordinatesFromUnknown(lieu.geolocalisation) ??
@@ -822,7 +1336,9 @@ export class ReconversionService {
     if (raw == null || typeof raw !== 'object') return null;
     const value = raw as Record<string, unknown>;
     const latitude = Number(value['latitude'] ?? value['lat']);
-    const longitude = Number(value['longitude'] ?? value['lon'] ?? value['lng']);
+    const longitude = Number(
+      value['longitude'] ?? value['lon'] ?? value['lng'],
+    );
     return this.validCoordinates(latitude, longitude)
       ? { latitude, longitude }
       : null;
@@ -1696,6 +2212,7 @@ export class ReconversionService {
   ): FormationSource | undefined {
     if (raw == null || raw.length === 0) return undefined;
     if (
+      raw === 'catalogue' ||
       raw === 'apprentissage' ||
       raw === 'koumoul' ||
       raw === 'supabase'
