@@ -151,11 +151,12 @@ const MIN_SHARE_TO_PRUNE = 0.5;
 const ENTREPRISES_URL = 'https://recherche-entreprises.api.gouv.fr/search';
 /**
  * Provider sites looked up per import. The register allows 7 calls per
- * second: 3000 lookups take about 10 minutes. The first run is larger and
+ * second (it refuses bursts): 3000 lookups at 3 per second take about
+ * 17 minutes. The first run is larger and
  * is done once by hand (see locateProviders).
  */
 const SITES_PER_RUN = 3000;
-const SITE_LOOKUPS_PER_SECOND = 5;
+const SITE_LOOKUPS_PER_SECOND = 3;
 
 interface ProviderSite {
   siren: string;
@@ -600,19 +601,10 @@ export class TrainingOffersService {
    * the offers. Returns how many pairs were looked up.
    */
   async locateProviders(limit: number): Promise<number> {
-    const { data, error } = await this.supabase.rpc(
-      'training_provider_sites_to_check',
-      { p_limit: limit },
-    );
-    if (error) throw new Error(`Listing providers failed: ${error.message}`);
-    const pairs = (data ?? []) as {
-      siren: string;
-      department_code: string;
-      provider_name: string | null;
-      sirets: string[] | null;
-    }[];
-
     let pending: ProviderSite[] = [];
+    let looked = 0;
+    let located = 0;
+    // Saves the sites found, then copies them onto the offers.
     const save = async () => {
       if (!pending.length) return;
       const rows = pending;
@@ -623,33 +615,69 @@ export class TrainingOffersService {
           .upsert(rows, { onConflict: 'siren,department_code' });
         if (saveError) throw new Error(saveError.message);
       });
+      const found = rows.filter((row) => row.status === 'site');
+      if (!found.length) return;
+      const { data: updated, error: applyError } = await this.supabase.rpc(
+        'apply_training_provider_sites',
+        {
+          p_sirens: found.map((row) => row.siren),
+          p_departments: found.map((row) => row.department_code),
+        },
+      );
+      if (applyError) {
+        throw new Error(
+          `Applying provider sites failed: ${applyError.message}`,
+        );
+      }
+      located += Number(updated ?? 0);
     };
 
-    // A few lookups at a time, at most SITE_LOOKUPS_PER_SECOND per second.
-    for (let i = 0; i < pairs.length; i += SITE_LOOKUPS_PER_SECOND) {
-      const started = Date.now();
-      const found = await Promise.all(
-        pairs
-          .slice(i, i + SITE_LOOKUPS_PER_SECOND)
-          .map((pair) => this.findProviderSite(pair)),
+    // Supabase returns at most 1000 rows per call: take the pairs to look
+    // up 1000 at a time; the ones done are saved, so the next call skips them.
+    let stopped = false;
+    while (!stopped && looked < limit) {
+      const { data, error } = await this.supabase.rpc(
+        'training_provider_sites_to_check',
+        { p_limit: Math.min(1000, limit - looked) },
       );
-      for (const site of found) if (site) pending.push(site);
-      if (pending.length >= 100) await save();
-      const wait = 1000 - (Date.now() - started);
-      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-    await save();
+      if (error) throw new Error(`Listing providers failed: ${error.message}`);
+      const pairs = (data ?? []) as {
+        siren: string;
+        department_code: string;
+        provider_name: string | null;
+        sirets: string[] | null;
+      }[];
+      if (!pairs.length) break;
 
-    const { data: updated, error: applyError } = await this.supabase.rpc(
-      'apply_training_provider_sites',
-    );
-    if (applyError) {
-      throw new Error(`Applying provider sites failed: ${applyError.message}`);
+      // A few lookups at a time, at most SITE_LOOKUPS_PER_SECOND per second.
+      for (let i = 0; i < pairs.length; i += SITE_LOOKUPS_PER_SECOND) {
+        const started = Date.now();
+        const found = await Promise.all(
+          pairs
+            .slice(i, i + SITE_LOOKUPS_PER_SECOND)
+            .map((pair) => this.findProviderSite(pair)),
+        );
+        looked += found.length;
+        for (const site of found) if (site) pending.push(site);
+        if (pending.length >= 100) await save();
+        if (found.some((site) => site === null)) {
+          // The register keeps refusing: stop, the next run goes on.
+          this.logger.warn(
+            'Training provider sites: company register unavailable, stopping',
+          );
+          stopped = true;
+          break;
+        }
+        const wait = 1000 - (Date.now() - started);
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      await save();
     }
+
     this.logger.log(
-      `Training provider sites: ${pairs.length} looked up, ${String(updated)} offers located`,
+      `Training provider sites: ${looked} looked up, ${located} offers located`,
     );
-    return pairs.length;
+    return looked;
   }
 
   /**
@@ -707,14 +735,18 @@ export class TrainingOffersService {
       }[];
     };
     try {
-      payload = await withRetry('Company register', async () => {
-        const response = await fetch(`${ENTREPRISES_URL}?${params}`);
-        if (response.status === 429 || response.status >= 500) {
-          throw new Error(`Company register busy (${response.status})`);
-        }
-        if (!response.ok) return {};
-        return (await response.json()) as typeof payload;
-      });
+      payload = await withRetry(
+        'Company register',
+        async () => {
+          const response = await fetch(`${ENTREPRISES_URL}?${params}`);
+          if (response.status === 429 || response.status >= 500) {
+            throw new Error(`Company register busy (${response.status})`);
+          }
+          if (!response.ok) return {};
+          return (await response.json()) as typeof payload;
+        },
+        { tries: 4, delayMs: 20_000 },
+      );
     } catch {
       return null;
     }
@@ -849,18 +881,22 @@ function dedupeKey(
   return `${siren}:${certification}`;
 }
 
-/** Runs a network call again (up to 3 tries) when it fails. */
-async function withRetry<T>(label: string, call: () => Promise<T>): Promise<T> {
+/** Runs a network call again (3 tries by default) when it fails. */
+async function withRetry<T>(
+  label: string,
+  call: () => Promise<T>,
+  { tries = 3, delayMs = 5000 }: { tries?: number; delayMs?: number } = {},
+): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await call();
     } catch (cause) {
-      if (attempt >= 3) throw cause;
+      if (attempt >= tries) throw cause;
       const message = cause instanceof Error ? cause.message : String(cause);
       new Logger(TrainingOffersService.name).warn(
         `${label}: try ${attempt} failed (${message}), retrying`,
       );
-      await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+      await new Promise((resolve) => setTimeout(resolve, attempt * delayMs));
     }
   }
 }
