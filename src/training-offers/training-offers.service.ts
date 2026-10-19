@@ -339,9 +339,11 @@ export class TrainingOffersService {
     activeRncp: Set<string>,
     seenAt: string,
   ): TrainingOffer | null {
-    const sourceId = text(row.numero_formation);
+    const numero = text(row.numero_formation);
     const title = text(row.intitule_formation);
-    if (!sourceId || !title) return null;
+    if (!numero || !title) return null;
+    // The export has one row per department where the offer is given.
+    const sourceId = `${numero}:${text(row.code_departement) ?? 'na'}`;
 
     const siret = digits(row.siret);
     const rncpRaw = text(row.code_rncp);
@@ -475,11 +477,14 @@ export class TrainingOffersService {
       item.lieu?.geolocalisation?.coordinates ??
       etablissement.geopoint?.coordinates;
 
-    const upcoming = (item.sessions ?? [])
-      .filter((session) => !session.fin || Date.parse(session.fin) > now)
+    const sessions = item.sessions ?? [];
+    const openSessions = sessions.filter(
+      (session) => !session.fin || Date.parse(session.fin) > now,
+    );
+    const nextStart = sessions
       .map((session) => session.debut)
-      .filter((start): start is string => !!start)
-      .sort();
+      .filter((start): start is string => !!start && Date.parse(start) >= now)
+      .sort()[0];
 
     return {
       id: `apprentissage:${sourceId}`,
@@ -504,8 +509,8 @@ export class TrainingOffersService {
       lat: Array.isArray(coordinates) ? (num(coordinates[1]) ?? null) : null,
       lng: Array.isArray(coordinates) ? (num(coordinates[0]) ?? null) : null,
       remote: item.modalite?.entierement_a_distance === true,
-      active_sessions: upcoming.length,
-      next_session_at: upcoming[0]?.slice(0, 10) ?? null,
+      active_sessions: openSessions.length,
+      next_session_at: nextStart?.slice(0, 10) ?? null,
       price_min: null,
       price_max: null,
       hours_min: null,
