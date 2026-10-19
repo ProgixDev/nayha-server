@@ -3,6 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateBlogArticleDto } from './dto/create-blog-article.dto';
 import { UpdateBlogArticleDto } from './dto/update-blog-article.dto';
+import {
+  Paginated,
+  pageRequest,
+  paginateArray,
+  searchable,
+} from '../common/pagination';
 
 export interface BlogArticleEntity {
   id: string;
@@ -361,7 +367,11 @@ export class BlogService {
     return article;
   }
 
-  async trackView(id: string, userId?: string, sessionId?: string): Promise<{ success: boolean; viewsCount: number }> {
+  async trackView(
+    id: string,
+    userId?: string,
+    sessionId?: string,
+  ): Promise<{ success: boolean; viewsCount: number }> {
     try {
       // 1. Insert record in blog_views
       await this.supabase.from('blog_views').insert({
@@ -414,15 +424,82 @@ export class BlogService {
     return [...this.inMemoryArticles];
   }
 
+  /** Admin list, one page: ?page=&pageSize=&search=&category= */
+  async listAdminPage(
+    query: Record<string, string | undefined>,
+  ): Promise<Paginated<BlogArticleEntity>> {
+    const request = pageRequest(query);
+    const search = (query.search ?? '').trim();
+    const category = (query.category ?? '').trim();
+    const byCategory = !!category && category.toLowerCase() !== 'tous';
+
+    try {
+      let db = this.supabase
+        .from('blog_articles')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false });
+      if (byCategory) db = db.ilike('category', category);
+      // Characters that would break the PostgREST "or" syntax are dropped.
+      const term = search.replace(/[,()*%\\]/g, ' ').trim();
+      if (term) {
+        db = db.or(
+          ['title', 'subtitle', 'key_takeaway']
+            .map((column) => `${column}.ilike.%${term}%`)
+            .join(','),
+        );
+      }
+      const { data, error, count } = await db.range(request.from, request.to);
+      // An empty table falls back to the default articles, as listAdmin does.
+      if (!error && data && (count ?? 0) > 0) {
+        return {
+          items: data.map(this.mapFromDb),
+          total: count ?? data.length,
+          page: request.page,
+          pageSize: request.pageSize,
+        };
+      }
+      if (!error && (byCategory || search)) {
+        const { count: all } = await this.supabase
+          .from('blog_articles')
+          .select('id', { count: 'exact', head: true });
+        if ((all ?? 0) > 0) {
+          return {
+            items: [],
+            total: 0,
+            page: request.page,
+            pageSize: request.pageSize,
+          };
+        }
+      }
+    } catch (_) {
+      // fallback
+    }
+
+    const q = searchable(search);
+    const items = this.inMemoryArticles.filter(
+      (a) =>
+        (!byCategory || a.category.toLowerCase() === category.toLowerCase()) &&
+        (!q ||
+          [a.title, a.subtitle, a.keyTakeaway].some((v) =>
+            searchable(v).includes(q),
+          )),
+    );
+    return paginateArray(items, request);
+  }
+
   async getStats(): Promise<BlogStatsEntity> {
     const articles = await this.listAdmin();
     const published = articles.filter((a) => a.isPublished).length;
     const draft = articles.length - published;
-    const totalViews = articles.reduce((acc, a) => acc + (a.viewsCount || 0), 0);
+    const totalViews = articles.reduce(
+      (acc, a) => acc + (a.viewsCount || 0),
+      0,
+    );
 
     const categoryCounts: Record<string, number> = {};
     articles.forEach((a) => {
-      categoryCounts[a.category] = (categoryCounts[a.category] || 0) + (a.viewsCount || 0);
+      categoryCounts[a.category] =
+        (categoryCounts[a.category] || 0) + (a.viewsCount || 0);
     });
 
     let mostReadCategory = 'Confiance';
@@ -511,25 +588,54 @@ export class BlogService {
     return entity;
   }
 
-  async update(id: string, dto: UpdateBlogArticleDto): Promise<BlogArticleEntity> {
+  async update(
+    id: string,
+    dto: UpdateBlogArticleDto,
+  ): Promise<BlogArticleEntity> {
     const now = new Date().toISOString();
     try {
       const updatePayload: Record<string, any> = {
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
-        ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle.trim() } : {}),
-        ...(dto.category !== undefined ? { category: dto.category.trim() } : {}),
-        ...(dto.readTimeMinutes !== undefined ? { read_time_minutes: dto.readTimeMinutes } : {}),
-        ...(dto.keyTakeaway !== undefined ? { key_takeaway: dto.keyTakeaway.trim() } : {}),
-        ...(dto.exerciseTitle !== undefined ? { exercise_title: dto.exerciseTitle?.trim() || null } : {}),
-        ...(dto.exercisePrompt !== undefined ? { exercise_prompt: dto.exercisePrompt?.trim() || null } : {}),
+        ...(dto.subtitle !== undefined
+          ? { subtitle: dto.subtitle.trim() }
+          : {}),
+        ...(dto.category !== undefined
+          ? { category: dto.category.trim() }
+          : {}),
+        ...(dto.readTimeMinutes !== undefined
+          ? { read_time_minutes: dto.readTimeMinutes }
+          : {}),
+        ...(dto.keyTakeaway !== undefined
+          ? { key_takeaway: dto.keyTakeaway.trim() }
+          : {}),
+        ...(dto.exerciseTitle !== undefined
+          ? { exercise_title: dto.exerciseTitle?.trim() || null }
+          : {}),
+        ...(dto.exercisePrompt !== undefined
+          ? { exercise_prompt: dto.exercisePrompt?.trim() || null }
+          : {}),
         ...(dto.sections !== undefined ? { sections: dto.sections } : {}),
-        ...(dto.coachTrigger !== undefined ? { coach_trigger: dto.coachTrigger.trim() } : {}),
-        ...(dto.coachMessage !== undefined ? { coach_message: dto.coachMessage.trim() } : {}),
-        ...(dto.isPublished !== undefined ? { is_published: dto.isPublished } : {}),
-        ...(dto.authorName !== undefined ? { author_name: dto.authorName?.trim() || null } : {}),
-        ...(dto.authorRole !== undefined ? { author_role: dto.authorRole?.trim() || null } : {}),
-        ...(dto.authorAvatarUrl !== undefined ? { author_avatar_url: dto.authorAvatarUrl?.trim() || null } : {}),
-        ...(dto.coverImageUrl !== undefined ? { cover_image_url: dto.coverImageUrl?.trim() || null } : {}),
+        ...(dto.coachTrigger !== undefined
+          ? { coach_trigger: dto.coachTrigger.trim() }
+          : {}),
+        ...(dto.coachMessage !== undefined
+          ? { coach_message: dto.coachMessage.trim() }
+          : {}),
+        ...(dto.isPublished !== undefined
+          ? { is_published: dto.isPublished }
+          : {}),
+        ...(dto.authorName !== undefined
+          ? { author_name: dto.authorName?.trim() || null }
+          : {}),
+        ...(dto.authorRole !== undefined
+          ? { author_role: dto.authorRole?.trim() || null }
+          : {}),
+        ...(dto.authorAvatarUrl !== undefined
+          ? { author_avatar_url: dto.authorAvatarUrl?.trim() || null }
+          : {}),
+        ...(dto.coverImageUrl !== undefined
+          ? { cover_image_url: dto.coverImageUrl?.trim() || null }
+          : {}),
         updated_at: now,
       };
 
@@ -555,20 +661,46 @@ export class BlogService {
       this.inMemoryArticles[index] = {
         ...this.inMemoryArticles[index],
         ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
-        ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle.trim() } : {}),
-        ...(dto.category !== undefined ? { category: dto.category.trim() } : {}),
-        ...(dto.readTimeMinutes !== undefined ? { readTimeMinutes: dto.readTimeMinutes } : {}),
-        ...(dto.keyTakeaway !== undefined ? { keyTakeaway: dto.keyTakeaway.trim() } : {}),
-        ...(dto.exerciseTitle !== undefined ? { exerciseTitle: dto.exerciseTitle?.trim() || undefined } : {}),
-        ...(dto.exercisePrompt !== undefined ? { exercisePrompt: dto.exercisePrompt?.trim() || undefined } : {}),
+        ...(dto.subtitle !== undefined
+          ? { subtitle: dto.subtitle.trim() }
+          : {}),
+        ...(dto.category !== undefined
+          ? { category: dto.category.trim() }
+          : {}),
+        ...(dto.readTimeMinutes !== undefined
+          ? { readTimeMinutes: dto.readTimeMinutes }
+          : {}),
+        ...(dto.keyTakeaway !== undefined
+          ? { keyTakeaway: dto.keyTakeaway.trim() }
+          : {}),
+        ...(dto.exerciseTitle !== undefined
+          ? { exerciseTitle: dto.exerciseTitle?.trim() || undefined }
+          : {}),
+        ...(dto.exercisePrompt !== undefined
+          ? { exercisePrompt: dto.exercisePrompt?.trim() || undefined }
+          : {}),
         ...(dto.sections !== undefined ? { sections: dto.sections } : {}),
-        ...(dto.coachTrigger !== undefined ? { coachTrigger: dto.coachTrigger.trim() } : {}),
-        ...(dto.coachMessage !== undefined ? { coachMessage: dto.coachMessage.trim() } : {}),
-        ...(dto.isPublished !== undefined ? { isPublished: dto.isPublished } : {}),
-        ...(dto.authorName !== undefined ? { authorName: dto.authorName?.trim() } : {}),
-        ...(dto.authorRole !== undefined ? { authorRole: dto.authorRole?.trim() } : {}),
-        ...(dto.authorAvatarUrl !== undefined ? { authorAvatarUrl: dto.authorAvatarUrl?.trim() } : {}),
-        ...(dto.coverImageUrl !== undefined ? { coverImageUrl: dto.coverImageUrl?.trim() } : {}),
+        ...(dto.coachTrigger !== undefined
+          ? { coachTrigger: dto.coachTrigger.trim() }
+          : {}),
+        ...(dto.coachMessage !== undefined
+          ? { coachMessage: dto.coachMessage.trim() }
+          : {}),
+        ...(dto.isPublished !== undefined
+          ? { isPublished: dto.isPublished }
+          : {}),
+        ...(dto.authorName !== undefined
+          ? { authorName: dto.authorName?.trim() }
+          : {}),
+        ...(dto.authorRole !== undefined
+          ? { authorRole: dto.authorRole?.trim() }
+          : {}),
+        ...(dto.authorAvatarUrl !== undefined
+          ? { authorAvatarUrl: dto.authorAvatarUrl?.trim() }
+          : {}),
+        ...(dto.coverImageUrl !== undefined
+          ? { coverImageUrl: dto.coverImageUrl?.trim() }
+          : {}),
         updatedAt: now,
       };
       return this.inMemoryArticles[index];

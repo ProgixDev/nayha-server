@@ -52,11 +52,11 @@ export class BlogController {
 
   // ── Admin Endpoints ────────────────────────────────────────────────────────
 
+  /** ?page=&pageSize=&search=&category= */
   @Get('admin/articles')
   @UseGuards(AdminGuard)
-  async listAdminArticles() {
-    const articles = await this.blogService.listAdmin();
-    return { articles };
+  listAdminArticles(@Query() query: Record<string, string | undefined>) {
+    return this.blogService.listAdminPage(query);
   }
 
   @Get('admin/stats')
