@@ -1,4 +1,5 @@
 import type { User } from '@supabase/supabase-js';
+import { forgetBlockedState } from '../auth/guards/supabase-jwt.guard';
 import { pageRequest, paginateArray, searchable } from '../common/pagination';
 import {
   ForbiddenException,
@@ -432,23 +433,36 @@ export class UsersService {
     return found;
   }
 
+  /**
+   * Suspends or restores an account: the profile flag cuts API access at
+   * once, and the Supabase ban stops new sign-ins and token refreshes.
+   */
   async toggleBlockUser(id: string, isBlocked: boolean) {
-    try {
-      const { data, error } = await this.supabase
-        .from('user_profiles')
-        .update({ is_blocked: isBlocked })
-        .eq('id', id)
-        .select()
-        .maybeSingle();
-
-      return await this.getUserById(id);
-    } catch (err) {
-      this.logger.error(`Error toggling block user ${id}: ${err}`);
+    const { data, error } = await this.supabase
+      .from('user_profiles')
+      .update({ is_blocked: isBlocked })
+      .eq('id', id)
+      .select('id')
+      .maybeSingle();
+    if (error) {
+      this.logger.error(`Blocking user ${id} failed: ${error.message}`);
+      throw new InternalServerErrorException(
+        'Le compte n’a pas pu être mis à jour.',
+      );
     }
+    if (!data) throw new NotFoundException('Utilisatrice introuvable');
 
-    const found = DEFAULT_ADMIN_USERS.find((u) => u.id === id);
-    if (found) found.is_blocked = isBlocked;
-    return found;
+    const { error: banError } = await this.supabase.auth.admin.updateUserById(
+      id,
+      { ban_duration: isBlocked ? '876000h' : 'none' },
+    );
+    if (banError) {
+      this.logger.error(
+        `Supabase ban update failed for user ${id}: ${banError.message}`,
+      );
+    }
+    forgetBlockedState(id);
+    return this.getUserById(id);
   }
 
   async touchActivity(userId: string) {
