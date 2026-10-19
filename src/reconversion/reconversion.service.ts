@@ -62,18 +62,28 @@ interface CatalogueOffer {
   cpf_eligible: boolean;
   apprentissage: boolean;
   qualiopi: boolean | null;
+  /** true when qualiopi comes from a check, not from the CPF rule. */
+  qualiopi_verified: boolean;
   certification_active: boolean | null;
 }
 
 /** What the search functions say about one certification or provider. */
 interface CatalogueSummary {
   groupKey: string;
-  providers: number | null;
+  /** Badges of the provider shown (both sources merged). */
   distanceKm: number | null;
   cpfEligible: boolean;
   apprentissage: boolean;
   qualiopi: boolean;
-  remote: boolean;
+  /** The whole certification, on the certification list only. */
+  groupe?: {
+    organismes: number;
+    plusProcheKm: number | null;
+    cpf: boolean;
+    alternance: boolean;
+    qualiopi: boolean;
+    distance: boolean;
+  };
 }
 
 interface CatalogueCertification {
@@ -210,6 +220,13 @@ export class ReconversionService {
   private readonly qualiopiCache = new Map<
     string,
     { value: boolean; checkedAt: number }
+  >();
+  private static readonly detailsCacheTtlMs = 6 * 60 * 60 * 1000;
+  private static readonly detailsCacheMaxSize = 5000;
+  /** Live details of catalogue offers and certifications, by id or code. */
+  private readonly detailsCache = new Map<
+    string,
+    { value: Record<string, unknown> | null; checkedAt: number }
   >();
   private readonly cityCoordinatesCache = new Map<
     string,
@@ -360,7 +377,10 @@ export class ReconversionService {
       case 'mcf':
         return this.getMcfFormationDetail(actualId);
       case 'apprentissage':
-        return this.getApprentissageFormationDetail(codeRome, actualId);
+        return (
+          (await this.getApprentissageCatalogueDetail(actualId)) ??
+          this.getApprentissageFormationDetail(codeRome, actualId)
+        );
       case 'koumoul':
         return this.getKoumoulFormationDetail(codeRome, actualId);
       case 'supabase':
@@ -777,18 +797,18 @@ export class ReconversionService {
       : data;
 
     const certifications = await this.catalogueCertifications([offer]);
-    return {
+    const formation = {
       ...this.catalogueOfferToFormation(offer, certifications, {
         groupKey: this.catalogueGroupKey(offer),
-        providers: null,
         distanceKm: null,
         cpfEligible: offer.cpf_eligible,
         apprentissage: offer.apprentissage,
         qualiopi: offer.qualiopi === true,
-        remote: offer.remote,
       }),
       verifieEnDirect: live != null,
     };
+    await this.enrichCatalogueFormations([formation]);
+    return formation;
   }
 
   /**
@@ -862,6 +882,10 @@ export class ReconversionService {
     const groups = (data ?? []) as {
       group_key: string;
       offer_id: string;
+      offer_distance_km: number | null;
+      offer_cpf_eligible: boolean;
+      offer_apprentissage: boolean;
+      offer_qualiopi: boolean;
       providers: number;
       nearest_km: number | null;
       cpf_eligible: boolean;
@@ -883,15 +907,22 @@ export class ReconversionService {
       return [
         this.catalogueOfferToFormation(offer, certifications, {
           groupKey: group.group_key,
-          providers: group.providers,
-          distanceKm: group.nearest_km,
-          cpfEligible: group.cpf_eligible,
-          apprentissage: group.apprentissage,
-          qualiopi: group.qualiopi,
-          remote: group.remote,
+          distanceKm: group.offer_distance_km,
+          cpfEligible: group.offer_cpf_eligible,
+          apprentissage: group.offer_apprentissage,
+          qualiopi: group.offer_qualiopi,
+          groupe: {
+            organismes: group.providers,
+            plusProcheKm: group.nearest_km,
+            cpf: group.cpf_eligible,
+            alternance: group.apprentissage,
+            qualiopi: group.qualiopi,
+            distance: group.remote,
+          },
         }),
       ];
     });
+    await this.enrichCatalogueFormations(results);
     const total = groups[0]?.total_groups ?? 0;
     const nextOffset = offset + groups.length;
     return {
@@ -961,15 +992,14 @@ export class ReconversionService {
       return [
         this.catalogueOfferToFormation(offer, certifications, {
           groupKey,
-          providers: null,
           distanceKm: row.distance_km,
           cpfEligible: row.cpf_eligible,
           apprentissage: row.apprentissage,
           qualiopi: row.qualiopi,
-          remote: offer.remote,
         }),
       ];
     });
+    await this.enrichCatalogueFormations(results);
     const total = rows[0]?.total_offers ?? 0;
     const nextOffset = offset + rows.length;
     return {
@@ -1082,7 +1112,8 @@ export class ReconversionService {
       id: offer.id,
       source: offer.source,
       certificationKey: summary.groupKey,
-      organismesCount: summary.providers,
+      organismesCount: summary.groupe?.organismes ?? null,
+      groupe: summary.groupe ?? null,
       siret: offer.siret ?? '',
       nomOrganisme: offer.provider_name ?? 'Organisme de formation',
       titreFormation: offer.certification_title ?? offer.title,
@@ -1101,8 +1132,10 @@ export class ReconversionService {
       cpfEligibility: summary.cpfEligible ? 'eligible' : 'to_verify',
       cpfOfferVerified: summary.cpfEligible,
       isQualiopi: summary.qualiopi,
-      qualiopiVerified: offer.qualiopi != null,
-      isDistance: summary.remote,
+      // Mon Compte Formation lists only Qualiopi providers (law since 2022);
+      // "verified" only once the company register confirmed it.
+      qualiopiVerified: offer.qualiopi_verified,
+      isDistance: offer.remote,
       distanceKm: summary.distanceKm,
       localisationPrecise: offer.location_precise,
       duree: duree ?? 'Durée selon parcours',
@@ -1132,6 +1165,334 @@ export class ReconversionService {
         summary.apprentissage || (certification?.accessibilite_ca ?? 0) > 0,
       vaeAccessible: (certification?.accessibilite_vae ?? 0) > 0,
     };
+  }
+
+  /**
+   * Live opening of an API Apprentissage offer of the catalogue. A withdrawn
+   * offer is removed and never shown again. Returns null when the offer is
+   * not in the catalogue (older ids): the former lookup then applies.
+   */
+  private async getApprentissageCatalogueDetail(
+    cle: string,
+  ): Promise<Record<string, unknown> | null> {
+    const id = `apprentissage:${cle}`;
+    const { data, error } = await this.supabase
+      .from('training_offers')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle<CatalogueOffer>();
+    if (error || !data) return null;
+
+    const live = await this.fetchApprentissageOffer(cle);
+    if (live === null) {
+      await this.supabase.from('training_offers').delete().eq('id', id);
+      throw new NotFoundException('Cette formation n’est plus proposée.');
+    }
+    if (live) this.cacheDetails(id, this.apprentissageDetails(live));
+
+    const certifications = await this.catalogueCertifications([data]);
+    const formation = {
+      ...this.catalogueOfferToFormation(data, certifications, {
+        groupKey: this.catalogueGroupKey(data),
+        distanceKm: null,
+        cpfEligible: data.cpf_eligible,
+        apprentissage: data.apprentissage,
+        qualiopi: data.qualiopi === true,
+      }),
+      verifieEnDirect: live !== undefined,
+    };
+    await this.enrichCatalogueFormations([formation]);
+    return formation;
+  }
+
+  /**
+   * Adds what the catalogue does not store (it would not fit in the
+   * database): skill blocks and registration end of the certification
+   * (France Compétences, via Koumoul), content and objective (Mon Compte
+   * Formation), contact, content and sessions (API Apprentissage). Only for
+   * the results of one page; a source that fails leaves its fields empty.
+   */
+  private async enrichCatalogueFormations(
+    formations: Record<string, unknown>[],
+  ): Promise<void> {
+    if (!formations.length) return;
+    const ids = formations.map((formation) => String(formation['id']));
+    const rncpCodes = formations
+      .map((formation) => String(formation['certificationCode'] ?? ''))
+      .filter((code) => code.startsWith('RNCP'));
+
+    const [certifications, mcfOffers, apprentissageOffers] = await Promise.all([
+      this.koumoulCertificationDetails(rncpCodes),
+      this.mcfOfferDetails(ids.filter((id) => id.startsWith('mcf:'))),
+      this.apprentissageOfferDetails(
+        ids.filter((id) => id.startsWith('apprentissage:')),
+      ),
+    ]);
+
+    for (const formation of formations) {
+      const id = String(formation['id']);
+      const certification = certifications.get(
+        String(formation['certificationCode'] ?? ''),
+      );
+      const offer = mcfOffers.get(id) ?? apprentissageOffers.get(id);
+      Object.assign(formation, offer ?? {});
+      if (certification) {
+        const blocs = certification['blocsCompetences'] as string[];
+        if (blocs.length) {
+          formation['blocsCompetences'] = blocs;
+          formation['blocsCompetencesCodes'] =
+            certification['blocsCompetencesCodes'];
+        }
+        formation['dateFinEnregistrement'] =
+          certification['dateFinEnregistrement'];
+        // France Compétences is the reference for the registration.
+        if (certification['actif'] === false) {
+          formation['isCertificationActive'] = false;
+          formation['rncpStatusVerified'] = true;
+        }
+      }
+    }
+  }
+
+  private cachedDetails(
+    key: string,
+  ): Record<string, unknown> | null | undefined {
+    const cached = this.detailsCache.get(key);
+    if (
+      !cached ||
+      Date.now() - cached.checkedAt > ReconversionService.detailsCacheTtlMs
+    ) {
+      return undefined;
+    }
+    return cached.value;
+  }
+
+  private cacheDetails(key: string, value: Record<string, unknown> | null) {
+    if (this.detailsCache.size >= ReconversionService.detailsCacheMaxSize) {
+      this.detailsCache.clear();
+    }
+    this.detailsCache.set(key, { value, checkedAt: Date.now() });
+  }
+
+  /** Skill blocks and registration end of RNCP certifications, by code. */
+  private async koumoulCertificationDetails(
+    codes: string[],
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const details = new Map<string, Record<string, unknown>>();
+    const missing: string[] = [];
+    for (const code of new Set(codes)) {
+      const cached = this.cachedDetails(code);
+      if (cached) details.set(code, cached);
+      else if (cached === undefined) missing.push(code);
+    }
+    if (!missing.length) return details;
+
+    const query = new URLSearchParams({
+      NUMERO_FICHE_in: missing.join(','),
+      select:
+        'NUMERO_FICHE,ACTIF,date_fin_enregistrement,blocs_competences_libelles,blocs_competences_codes',
+      size: String(missing.length),
+    });
+    try {
+      const response = await fetch(
+        `${ReconversionService.koumoulFormationsUrl}?${query.toString()}`,
+      );
+      if (!response.ok) return details;
+      const payload = (await response.json()) as KoumoulPage;
+      const found = new Set<string>();
+      for (const row of payload.results ?? []) {
+        const code = this.text(row['NUMERO_FICHE']);
+        if (!code) continue;
+        const value = {
+          actif: typeof row['ACTIF'] === 'boolean' ? row['ACTIF'] : null,
+          dateFinEnregistrement: this.frenchDate(
+            row['date_fin_enregistrement'],
+          ),
+          blocsCompetences: this.splitValues(row['blocs_competences_libelles']),
+          blocsCompetencesCodes: this.splitValues(
+            row['blocs_competences_codes'],
+          ),
+        };
+        details.set(code, value);
+        this.cacheDetails(code, value);
+        found.add(code);
+      }
+      for (const code of missing) {
+        if (!found.has(code)) this.cacheDetails(code, null);
+      }
+    } catch {
+      // Koumoul unreachable: the cards keep the catalogue data.
+    }
+    return details;
+  }
+
+  /** Content and objective of Mon Compte Formation offers, by catalogue id. */
+  private async mcfOfferDetails(
+    ids: string[],
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const details = new Map<string, Record<string, unknown>>();
+    const missing: string[] = [];
+    for (const id of ids) {
+      const cached = this.cachedDetails(id);
+      if (cached) details.set(id, cached);
+      else if (cached === undefined) missing.push(id);
+    }
+    // ids are "mcf:<numero>:<department>".
+    const numeros = [
+      ...new Set(
+        missing.map((id) => id.slice('mcf:'.length, id.lastIndexOf(':'))),
+      ),
+    ].filter((numero) => numero.length > 0);
+    if (!numeros.length) return details;
+
+    const quote = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
+    const query = new URLSearchParams({
+      select:
+        'numero_formation,code_departement,objectif_formation,contenu_formation,resultats_attendus_formation',
+      where: `numero_formation in (${numeros.map(quote).join(',')})`,
+      limit: '100',
+    });
+    try {
+      const response = await fetch(
+        `${ReconversionService.mcfCatalogueUrl}?${query.toString()}`,
+      );
+      if (!response.ok) return details;
+      const payload = (await response.json()) as {
+        results?: Record<string, unknown>[];
+      };
+      for (const row of payload.results ?? []) {
+        const id = `mcf:${this.text(row['numero_formation'])}:${this.text(row['code_departement'], 'na')}`;
+        if (!missing.includes(id)) continue;
+        const value = {
+          objectif: this.plainText(row['objectif_formation']),
+          contenu: this.plainText(row['contenu_formation']),
+          resultatsAttendus: this.plainText(
+            row['resultats_attendus_formation'],
+          ),
+        };
+        details.set(id, value);
+        this.cacheDetails(id, value);
+      }
+    } catch {
+      // Source unreachable: the cards keep the catalogue data.
+    }
+    return details;
+  }
+
+  /** Contact, content and sessions of API Apprentissage offers, by id. */
+  private async apprentissageOfferDetails(
+    ids: string[],
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const details = new Map<string, Record<string, unknown>>();
+    await Promise.all(
+      ids.map(async (id) => {
+        const cached = this.cachedDetails(id);
+        if (cached) {
+          details.set(id, cached);
+          return;
+        }
+        if (cached === null) return;
+        const item = await this.fetchApprentissageOffer(
+          id.slice('apprentissage:'.length),
+        );
+        if (item === undefined) return;
+        const value = item ? this.apprentissageDetails(item) : null;
+        this.cacheDetails(id, value);
+        if (value) details.set(id, value);
+      }),
+    );
+    return details;
+  }
+
+  /**
+   * One API Apprentissage offer: the offer, null when it is withdrawn,
+   * undefined when the source cannot be reached.
+   */
+  private async fetchApprentissageOffer(
+    cle: string,
+  ): Promise<Record<string, any> | null | undefined> {
+    if (!this.apprentissageApiKey) return undefined;
+    const url = ReconversionService.apprentissageApiUrl.replace(
+      /\/search$/,
+      `/${encodeURIComponent(cle)}`,
+    );
+    try {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.apprentissageApiKey}` },
+      });
+      if (response.status === 404) return null;
+      if (!response.ok) return undefined;
+      const item = (await response.json()) as Record<string, any>;
+      const status = this.text(item.statut?.catalogue).toLowerCase();
+      return status && !status.startsWith('publi') ? null : item;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private apprentissageDetails(
+    item: Record<string, any>,
+  ): Record<string, unknown> {
+    const organisme =
+      item.formateur?.organisme || item.responsable?.organisme || {};
+    const certification = item.certification?.valeur || {};
+    const contenu = item.contenu_educatif || {};
+    const now = Date.now();
+    const sessions = (Array.isArray(item.sessions) ? item.sessions : [])
+      .filter(
+        (session: any) => session.debut && Date.parse(session.debut) >= now,
+      )
+      .sort((a: any, b: any) => Date.parse(a.debut) - Date.parse(b.debut))
+      .map((session: any) => ({
+        debut: new Date(session.debut).toLocaleDateString('fr-FR'),
+        fin: session.fin
+          ? new Date(session.fin).toLocaleDateString('fr-FR')
+          : null,
+        capacite:
+          session.capacite != null && Number.isFinite(Number(session.capacite))
+            ? Number(session.capacite)
+            : null,
+      }));
+    const blocs = Array.isArray(certification.blocs_competences?.rncp)
+      ? certification.blocs_competences.rncp
+      : [];
+    return {
+      contactEmail:
+        this.text(item.contact?.email) ||
+        this.text(organisme.contacts?.[0]?.email),
+      contactTelephone: this.text(item.contact?.telephone),
+      contenu: this.plainText(contenu.contenu),
+      objectif: this.plainText(contenu.objectif),
+      sessions,
+      blocsCompetences: blocs.map((b: any) => b.intitule).filter(Boolean),
+      blocsCompetencesCodes: blocs.map((b: any) => b.code).filter(Boolean),
+      onisepUrl: this.text(item.onisep?.url),
+    };
+  }
+
+  /** "2030-09-30" → "30/09/2030"; empty when missing. */
+  private frenchDate(raw: unknown): string {
+    const value = this.text(raw);
+    const time = Date.parse(value);
+    return value && Number.isFinite(time)
+      ? new Date(time).toLocaleDateString('fr-FR')
+      : '';
+  }
+
+  /** Source texts can contain HTML: keep the text only. */
+  private plainText(raw: unknown): string {
+    const text = this.text(raw)
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|li|div)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    // Some sources write "-" or "." when there is nothing.
+    return /[\p{L}\d]/u.test(text) && text.length > 2 ? text : '';
   }
 
   private catalogueModalite(raw: string | undefined): string | null {
