@@ -5,6 +5,11 @@ import { CreatePostDto } from './dto/create-post.dto';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { ReportPostDto } from './dto/report-post.dto';
 import { PushService } from '../push/push.service';
+import {
+  pageRequest,
+  paginateArray,
+  type Paginated,
+} from '../common/pagination';
 
 export interface CommunityCommentEntity {
   id: string;
@@ -17,6 +22,21 @@ export interface CommunityCommentEntity {
   contenu: string;
   is_moderated: boolean;
   created_at: string;
+}
+
+export interface AdminPost {
+  id: string;
+  user_id: string;
+  auteur: string;
+  initiale: string;
+  contenu: string;
+  type: string;
+  reactions_count: number;
+  comments_count: number;
+  is_moderated: boolean;
+  created_at: string;
+  reports_count: number;
+  reports: any[];
 }
 
 @Injectable()
@@ -78,11 +98,7 @@ export class CommunityService {
     });
 
     const userIds = Array.from(
-      new Set(
-        (postsResult.data ?? [])
-          .map((p) => p.user_id)
-          .filter(Boolean),
-      ),
+      new Set((postsResult.data ?? []).map((p) => p.user_id).filter(Boolean)),
     );
     const { data: userProfiles } =
       userIds.length > 0
@@ -107,9 +123,7 @@ export class CommunityService {
       type: post.type,
       reactions_count: post.reactions_count ?? 0,
       comments_count:
-        post.comments_count ??
-        commentsCountsByPost.get(post.id) ??
-        0,
+        post.comments_count ?? commentsCountsByPost.get(post.id) ?? 0,
       created_at: post.created_at,
       user_reacted: reactedPostIds.has(post.id),
     }));
@@ -372,7 +386,7 @@ export class CommunityService {
             .from('community_posts')
             .update({ comments_count: nextCount })
             .eq('id', postId);
-        } catch (_) { }
+        } catch (_) {}
 
         void this.notifyReply(
           userId,
@@ -435,19 +449,109 @@ export class CommunityService {
 
   // ── Admin Operations ────────────────────────────────────────────────────────
 
-  async getAdminPosts() {
-    const [postsResult, reportsResult, commentsResult] = await Promise.all([
+  /**
+   * One page of posts for the admin.
+   * ?page=&pageSize=&filter=all|reported&search=
+   * "reported" lists posts with at least one report, most reported first.
+   * `counts` gives the totals of both tabs (not narrowed by the search).
+   */
+  async getAdminPostsPage(
+    query: Record<string, string | undefined>,
+  ): Promise<
+    Paginated<AdminPost> & { counts: { all: number; reported: number } }
+  > {
+    const request = pageRequest(query);
+    const filter = query.filter === 'reported' ? 'reported' : 'all';
+    // Characters that would break the PostgREST "or" filter are dropped.
+    const search = (query.search ?? '').replace(/[,()*%\\]/g, ' ').trim();
+    const searchFilter = search
+      ? `contenu.ilike.%${search}%,auteur.ilike.%${search}%`
+      : null;
+
+    const { data: reportRows, error: reportsError } = await this.supabase
+      .from('community_reports')
+      .select('post_id');
+    if (reportsError) {
+      throw new Error(reportsError.message);
+    }
+    const reportCounts = new Map<string, number>();
+    (reportRows ?? []).forEach((r) => {
+      reportCounts.set(r.post_id, (reportCounts.get(r.post_id) ?? 0) + 1);
+    });
+    const reportedIds = [...reportCounts.keys()];
+
+    const [allCount, reportedCount] = await Promise.all([
       this.supabase
         .from('community_posts')
-        .select('*')
-        .order('created_at', { ascending: false }),
-      this.supabase.from('community_reports').select('*'),
-      this.supabase.from('community_comments').select('post_id'),
+        .select('id', { count: 'exact', head: true }),
+      reportedIds.length
+        ? this.supabase
+            .from('community_posts')
+            .select('id', { count: 'exact', head: true })
+            .in('id', reportedIds)
+        : Promise.resolve({ count: 0, error: null }),
     ]);
+    const counts = {
+      all: allCount.count ?? 0,
+      reported: reportedCount.count ?? 0,
+    };
 
-    if (postsResult.error) {
-      throw new Error(postsResult.error.message);
+    if (filter === 'reported') {
+      if (!reportedIds.length) {
+        return { ...paginateArray([], request), counts };
+      }
+      let postsQuery = this.supabase
+        .from('community_posts')
+        .select('*')
+        .in('id', reportedIds);
+      if (searchFilter) postsQuery = postsQuery.or(searchFilter);
+      const { data, error } = await postsQuery;
+      if (error) {
+        throw new Error(error.message);
+      }
+      const sorted = (data ?? []).sort(
+        (a, b) =>
+          (reportCounts.get(b.id) ?? 0) - (reportCounts.get(a.id) ?? 0) ||
+          String(b.created_at).localeCompare(String(a.created_at)),
+      );
+      const page = paginateArray(sorted, request);
+      return {
+        ...page,
+        items: await this.toAdminPosts(page.items),
+        counts,
+      };
     }
+
+    let postsQuery = this.supabase
+      .from('community_posts')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(request.from, request.to);
+    if (searchFilter) postsQuery = postsQuery.or(searchFilter);
+    const { data, count, error } = await postsQuery;
+    if (error) {
+      throw new Error(error.message);
+    }
+    return {
+      items: await this.toAdminPosts(data ?? []),
+      total: count ?? 0,
+      page: request.page,
+      pageSize: request.pageSize,
+      counts,
+    };
+  }
+
+  /** Adds reports and comment counts to posts read from the table. */
+  private async toAdminPosts(posts: any[]): Promise<AdminPost[]> {
+    if (!posts.length) return [];
+    const ids = posts.map((p) => p.id);
+    const [reportsResult, commentsResult] = await Promise.all([
+      this.supabase.from('community_reports').select('*').in('post_id', ids),
+      this.supabase
+        .from('community_comments')
+        .select('post_id')
+        .in('post_id', ids),
+    ]);
 
     const reportsByPostId = new Map<string, any[]>();
     (reportsResult.data ?? []).forEach((r) => {
@@ -470,7 +574,7 @@ export class CommunityService {
       );
     });
 
-    return (postsResult.data ?? []).map((post) => {
+    return posts.map((post) => {
       const reports = reportsByPostId.get(post.id) ?? [];
       return {
         id: post.id,
@@ -481,9 +585,7 @@ export class CommunityService {
         type: post.type,
         reactions_count: post.reactions_count ?? 0,
         comments_count:
-          post.comments_count ??
-          commentsCountsByPost.get(post.id) ??
-          0,
+          post.comments_count ?? commentsCountsByPost.get(post.id) ?? 0,
         is_moderated: post.is_moderated ?? false,
         created_at: post.created_at,
         reports_count: reports.length,
@@ -547,7 +649,9 @@ export class CommunityService {
       throw new Error(error.message);
     }
 
-    this.inMemoryComments = this.inMemoryComments.filter((c) => c.post_id !== id);
+    this.inMemoryComments = this.inMemoryComments.filter(
+      (c) => c.post_id !== id,
+    );
     return { success: true };
   }
 }

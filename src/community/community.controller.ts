@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AdminGuard } from '../auth/guards/admin.guard';
@@ -80,11 +81,11 @@ export class CommunityController {
 
   // ── Admin Dashboard Endpoints ───────────────────────────────────────────────
 
+  /** ?page=&pageSize=&filter=all|reported&search= */
   @Get('admin/posts')
   @UseGuards(AdminGuard)
-  async getAdminPosts() {
-    const posts = await this.communityService.getAdminPosts();
-    return { posts };
+  getAdminPosts(@Query() query: Record<string, string | undefined>) {
+    return this.communityService.getAdminPostsPage(query);
   }
 
   @Get('admin/reports')
