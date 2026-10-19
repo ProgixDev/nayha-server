@@ -4,6 +4,12 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CreateAtelierDto } from './dto/create-atelier.dto';
 import { UpdateAtelierDto } from './dto/update-atelier.dto';
 import { TrackAtelierViewDto } from './dto/track-atelier-view.dto';
+import {
+  Paginated,
+  pageRequest,
+  paginateArray,
+  searchable,
+} from '../common/pagination';
 
 export interface AtelierEntity {
   id: string;
@@ -559,6 +565,79 @@ export class AteliersService {
     return [...this.inMemoryAteliers];
   }
 
+  /** Admin list, one page: ?page=&pageSize=&search=&category= */
+  async listAdminPage(
+    query: Record<string, string | undefined>,
+  ): Promise<Paginated<AtelierEntity>> {
+    const request = pageRequest(query);
+    const search = (query.search ?? '').trim();
+    const category = (query.category ?? '').trim();
+    const byCategory = !!category && category.toLowerCase() !== 'tous';
+    // Characters that would break the PostgREST filter syntax are dropped.
+    const clean = (value: string) => value.replace(/[,()*%\\]/g, ' ').trim();
+
+    try {
+      let db = this.supabase
+        .from('ateliers')
+        .select('*', { count: 'exact' })
+        .order('order', { ascending: true });
+      if (byCategory) {
+        const cat = clean(category);
+        db = db.or(`category.eq.${cat},palier.eq.${cat}`);
+      }
+      const term = clean(search);
+      if (term) {
+        db = db.or(
+          ['titre', 'category', 'step_tag', 'description', 'speaker_name']
+            .map((column) => `${column}.ilike.%${term}%`)
+            .join(','),
+        );
+      }
+      const { data, error, count } = await db.range(request.from, request.to);
+      // An empty table falls back to the default ateliers, as listAdmin does.
+      if (!error && data && (count ?? 0) > 0) {
+        return {
+          items: data.map(this.mapFromDb),
+          total: count ?? data.length,
+          page: request.page,
+          pageSize: request.pageSize,
+        };
+      }
+      if (!error && (byCategory || search)) {
+        const { count: all } = await this.supabase
+          .from('ateliers')
+          .select('id', { count: 'exact', head: true });
+        if ((all ?? 0) > 0) {
+          return {
+            items: [],
+            total: 0,
+            page: request.page,
+            pageSize: request.pageSize,
+          };
+        }
+      }
+    } catch (_) {
+      // fallback
+    }
+
+    const q = searchable(search);
+    const items = [...this.inMemoryAteliers]
+      .sort((a, b) => a.order - b.order)
+      .filter(
+        (a) =>
+          (!byCategory || a.category === category || a.palier === category) &&
+          (!q ||
+            [
+              a.titre,
+              a.category,
+              a.step_tag,
+              a.description,
+              a.speaker_name,
+            ].some((v) => searchable(v).includes(q))),
+      );
+    return paginateArray(items, request);
+  }
+
   async trackView(id: string, dto: TrackAtelierViewDto) {
     const now = new Date().toISOString();
     let progressRate = dto.progress_rate;
@@ -607,8 +686,7 @@ export class AteliersService {
             dto.watch_seconds || 0,
           );
           const isCompleted =
-            existing.completed ||
-            (dto.completed ?? (higherProgress >= 0.85));
+            existing.completed || (dto.completed ?? higherProgress >= 0.85);
 
           await this.supabase
             .from('atelier_views')
@@ -797,21 +875,39 @@ export class AteliersService {
         .from('ateliers')
         .update({
           ...(dto.titre ? { titre: dto.titre.trim() } : {}),
-          ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle?.trim() || null } : {}),
+          ...(dto.subtitle !== undefined
+            ? { subtitle: dto.subtitle?.trim() || null }
+            : {}),
           ...(dto.palier ? { palier: dto.palier.trim() } : {}),
-          ...(dto.palier_label ? { palier_label: dto.palier_label.trim() } : {}),
+          ...(dto.palier_label
+            ? { palier_label: dto.palier_label.trim() }
+            : {}),
           ...(dto.category ? { category: dto.category.trim() } : {}),
-          ...(dto.step_tag !== undefined ? { step_tag: dto.step_tag?.trim() || '' } : {}),
+          ...(dto.step_tag !== undefined
+            ? { step_tag: dto.step_tag?.trim() || '' }
+            : {}),
           ...(dto.duree ? { duree: dto.duree.trim() } : {}),
-          ...(dto.description !== undefined ? { description: dto.description?.trim() || '' } : {}),
-          ...(dto.video_url !== undefined ? { video_url: dto.video_url?.trim() || '' } : {}),
+          ...(dto.description !== undefined
+            ? { description: dto.description?.trim() || '' }
+            : {}),
+          ...(dto.video_url !== undefined
+            ? { video_url: dto.video_url?.trim() || '' }
+            : {}),
           ...(dto.objectifs !== undefined ? { objectifs: dto.objectifs } : {}),
           ...(dto.tips !== undefined ? { tips: dto.tips } : {}),
-          ...(dto.resource_url !== undefined ? { resource_url: dto.resource_url?.trim() || '' } : {}),
-          ...(dto.speaker_name !== undefined ? { speaker_name: dto.speaker_name?.trim() || '' } : {}),
-          ...(dto.speaker_role !== undefined ? { speaker_role: dto.speaker_role?.trim() || '' } : {}),
+          ...(dto.resource_url !== undefined
+            ? { resource_url: dto.resource_url?.trim() || '' }
+            : {}),
+          ...(dto.speaker_name !== undefined
+            ? { speaker_name: dto.speaker_name?.trim() || '' }
+            : {}),
+          ...(dto.speaker_role !== undefined
+            ? { speaker_role: dto.speaker_role?.trim() || '' }
+            : {}),
           ...(dto.icon ? { icon: dto.icon.trim() } : {}),
-          ...(dto.accent_color ? { accent_color: dto.accent_color.trim() } : {}),
+          ...(dto.accent_color
+            ? { accent_color: dto.accent_color.trim() }
+            : {}),
           ...(dto.order !== undefined ? { order: dto.order } : {}),
           ...(dto.is_active !== undefined ? { is_active: dto.is_active } : {}),
           updated_at: now,
@@ -826,19 +922,33 @@ export class AteliersService {
       this.inMemoryAteliers[index] = {
         ...this.inMemoryAteliers[index],
         ...(dto.titre ? { titre: dto.titre.trim() } : {}),
-        ...(dto.subtitle !== undefined ? { subtitle: dto.subtitle?.trim() } : {}),
+        ...(dto.subtitle !== undefined
+          ? { subtitle: dto.subtitle?.trim() }
+          : {}),
         ...(dto.palier ? { palier: dto.palier.trim() } : {}),
         ...(dto.palier_label ? { palier_label: dto.palier_label.trim() } : {}),
         ...(dto.category ? { category: dto.category.trim() } : {}),
-        ...(dto.step_tag !== undefined ? { step_tag: dto.step_tag?.trim() } : {}),
+        ...(dto.step_tag !== undefined
+          ? { step_tag: dto.step_tag?.trim() }
+          : {}),
         ...(dto.duree ? { duree: dto.duree.trim() } : {}),
-        ...(dto.description !== undefined ? { description: dto.description?.trim() || '' } : {}),
-        ...(dto.video_url !== undefined ? { video_url: dto.video_url?.trim() || '' } : {}),
+        ...(dto.description !== undefined
+          ? { description: dto.description?.trim() || '' }
+          : {}),
+        ...(dto.video_url !== undefined
+          ? { video_url: dto.video_url?.trim() || '' }
+          : {}),
         ...(dto.objectifs !== undefined ? { objectifs: dto.objectifs } : {}),
         ...(dto.tips !== undefined ? { tips: dto.tips } : {}),
-        ...(dto.resource_url !== undefined ? { resource_url: dto.resource_url?.trim() } : {}),
-        ...(dto.speaker_name !== undefined ? { speaker_name: dto.speaker_name?.trim() } : {}),
-        ...(dto.speaker_role !== undefined ? { speaker_role: dto.speaker_role?.trim() } : {}),
+        ...(dto.resource_url !== undefined
+          ? { resource_url: dto.resource_url?.trim() }
+          : {}),
+        ...(dto.speaker_name !== undefined
+          ? { speaker_name: dto.speaker_name?.trim() }
+          : {}),
+        ...(dto.speaker_role !== undefined
+          ? { speaker_role: dto.speaker_role?.trim() }
+          : {}),
         ...(dto.icon ? { icon: dto.icon.trim() } : {}),
         ...(dto.accent_color ? { accent_color: dto.accent_color.trim() } : {}),
         ...(dto.order !== undefined ? { order: dto.order } : {}),

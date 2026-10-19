@@ -33,10 +33,11 @@ export class AteliersController {
 
   // ── Admin endpoints ────────────────────────────────────────────────────────
 
+  /** ?page=&pageSize=&search=&category= */
   @Get('admin/all')
   @UseGuards(AdminGuard)
-  listAdmin() {
-    return this.ateliersService.listAdmin();
+  listAdmin(@Query() query: Record<string, string | undefined>) {
+    return this.ateliersService.listAdminPage(query);
   }
 
   @Get('admin/stats')
