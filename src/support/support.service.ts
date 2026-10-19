@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import type { AdminUserContext } from '../auth/guards/admin.guard';
+import { pageRequest } from '../common/pagination';
 import { PushService } from '../push/push.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { SendMessageDto } from './dto/send-message.dto';
@@ -219,27 +220,46 @@ export class SupportService {
 
   // ── Team side ─────────────────────────────────────────────────────────────
 
-  async listForAdmin(status?: string) {
-    let query = this.supabase
+  /**
+   * One page of the team inbox.
+   * ?page=&pageSize=&status=waiting|answered|resolved&search=
+   * The search looks in the subject and the last message.
+   */
+  async listForAdmin(query: Record<string, string | undefined> = {}) {
+    const request = pageRequest(query);
+    const status = query.status;
+    // Characters that would break the PostgREST "or" filter are dropped.
+    const search = (query.search ?? '').replace(/[,()*%\\]/g, ' ').trim();
+    let select = this.supabase
       .from('support_tickets')
-      .select('*')
+      .select('*', { count: 'exact' })
       .order('last_message_at', { ascending: status !== 'waiting' })
-      .limit(200);
+      .range(request.from, request.to);
     if (
       status === 'waiting' ||
       status === 'answered' ||
       status === 'resolved'
     ) {
-      query = query.eq('status', status);
+      select = select.eq('status', status);
     }
-    const { data, error } = await query;
+    if (search) {
+      select = select.or(
+        `subject.ilike.%${search}%,last_message_preview.ilike.%${search}%`,
+      );
+    }
+    const { data, count, error } = await select;
     if (error) this.fail('list admin tickets', error.message);
-    const tickets = data as TicketRow[];
+    const tickets = (data ?? []) as TicketRow[];
     const people = await this.peopleById(tickets.map((t) => t.user_id));
-    return tickets.map((ticket) => ({
-      ...this.toTicket(ticket, 'admin'),
-      user: people.get(ticket.user_id) ?? null,
-    }));
+    return {
+      items: tickets.map((ticket) => ({
+        ...this.toTicket(ticket, 'admin'),
+        user: people.get(ticket.user_id) ?? null,
+      })),
+      total: count ?? 0,
+      page: request.page,
+      pageSize: request.pageSize,
+    };
   }
 
   async statsForAdmin() {

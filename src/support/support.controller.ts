@@ -94,10 +94,11 @@ export class SupportController {
 
   // ── Team: inbox ───────────────────────────────────────────────────────────
 
+  /** ?page=&pageSize=&status=&search= */
   @Get('admin/tickets')
   @UseGuards(AdminGuard)
-  adminList(@Query('status') status?: string) {
-    return this.supportService.listForAdmin(status);
+  adminList(@Query() query: Record<string, string | undefined>) {
+    return this.supportService.listForAdmin(query);
   }
 
   @Get('admin/stats')
