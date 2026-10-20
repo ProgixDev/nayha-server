@@ -56,8 +56,12 @@ interface TrainingOffer {
   cpf_eligible: boolean;
   apprentissage: boolean;
   qualiopi: boolean | null;
-  /** true when qualiopi comes from a check (register or source). */
+  /** true when qualiopi comes from the public list of providers. */
   qualiopi_verified: boolean;
+  /** Qualiopi categories in the public list; [] when declared without. */
+  qualiopi_categories: string[] | null;
+  /** In the public list of providers; null when it could not be read. */
+  provider_listed: boolean | null;
   certification_active: boolean | null;
   certification_status: CertificationStatus['status'];
   registration_end: string | null;
@@ -194,8 +198,28 @@ const ENTREPRISES_URL = 'https://recherche-entreprises.api.gouv.fr/search';
  */
 const SITES_PER_RUN = 3000;
 const SITE_LOOKUPS_PER_SECOND = 3;
-/** Providers whose Qualiopi certification is checked per import. */
-const PROVIDERS_PER_RUN = 2000;
+/**
+ * Official public list of training providers (DGEFP, L.6351-7-1 Code du
+ * travail) with their Qualiopi certification categories.
+ */
+const PUBLIC_PROVIDERS_URL =
+  'https://www.monactiviteformation.emploi.gouv.fr/mon-activite-formation/public/listePubliqueOF?format=csv';
+/** Columns of the public list → category stored. */
+const QUALIOPI_CATEGORIES: Record<string, string> = {
+  'certifications.actionsDeFormation': 'actions_de_formation',
+  'certifications.bilansDeCompetences': 'bilans_de_competences',
+  'certifications.VAE': 'vae',
+  'certifications.actionsDeFormationParApprentissage': 'apprentissage',
+};
+/** The list is read once for both sources of one import. */
+const PUBLIC_PROVIDERS_TTL_MS = 6 * 60 * 60 * 1000;
+
+interface PublicProviders {
+  /** false: neither the list nor a saved copy could be read. */
+  loaded: boolean;
+  /** siren → Qualiopi categories ([] when declared without). */
+  bySiren: Map<string, string[]>;
+}
 
 interface CertificationCodes {
   /** RNCP code → registration, from France Compétences. */
@@ -231,6 +255,7 @@ export class TrainingOffersService {
   private readonly apprentissageApiKey?: string;
   private readonly cronSecret?: string;
   private running = false;
+  private publicProviders?: { value: PublicProviders; loadedAt: number };
 
   constructor(configService: ConfigService) {
     this.supabase = createClient(
@@ -341,7 +366,8 @@ export class TrainingOffersService {
   private async syncMcf(runStartedAt: string): Promise<SyncResult> {
     const certifications = await this.certificationCodes();
     const sites = await this.knownSites();
-    const providers = await this.knownProviders();
+    const providers = await this.loadPublicProviders();
+    const sirens = new Set<string>();
     const params = new URLSearchParams({
       select: MCF_FIELDS.join(','),
       where: 'nb_session_active>0',
@@ -396,6 +422,7 @@ export class TrainingOffersService {
           providers,
           runStartedAt,
         );
+        if (offer?.siren) sirens.add(offer.siren);
         if (!offer) {
           skipped++;
           continue;
@@ -414,15 +441,7 @@ export class TrainingOffersService {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.logger.warn(`Training provider sites lookup failed: ${message}`);
     });
-    // A failed check only leaves Qualiopi unknown for some providers.
-    await this.checkProvidersQualiopi(PROVIDERS_PER_RUN).catch(
-      (cause: unknown) => {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        this.logger.warn(
-          `Training providers Qualiopi check failed: ${message}`,
-        );
-      },
-    );
+    await this.saveProviders(sirens, providers);
     return { imported, skipped, removed };
   }
 
@@ -430,7 +449,7 @@ export class TrainingOffersService {
     row: Record<string, unknown>,
     certifications: CertificationCodes,
     sites: Map<string, ProviderSite>,
-    providers: Map<string, boolean>,
+    providers: PublicProviders,
     seenAt: string,
   ): TrainingOffer | null {
     const numero = text(row.numero_formation);
@@ -485,9 +504,7 @@ export class TrainingOffersService {
       // Listed on Mon Compte Formation with an open session: CPF offer.
       cpf_eligible: true,
       apprentissage: false,
-      // Only what the company register says; unknown until it is checked.
-      qualiopi: (siren ? providers.get(siren) : undefined) ?? null,
-      qualiopi_verified: !!siren && providers.has(siren),
+      ...qualiopiFields(siren, providers),
       // RNCP: France Compétences dates. RS: listed in CertifInfo (no dates
       // published). A code found in neither stays unknown.
       ...withActive(
@@ -514,6 +531,8 @@ export class TrainingOffersService {
     }
     const now = Date.now();
     const certifications = await this.certificationCodes();
+    const providers = await this.loadPublicProviders();
+    const sirens = new Set<string>();
     let imported = 0;
     let skipped = 0;
     let pageCount = 1;
@@ -548,11 +567,16 @@ export class TrainingOffersService {
         const offer = this.fromApprentissage(
           item,
           certifications,
+          providers,
           now,
           runStartedAt,
         );
-        if (offer) batch.push(offer);
-        else skipped++;
+        if (offer) {
+          batch.push(offer);
+          if (offer.siren) sirens.add(offer.siren);
+        } else {
+          skipped++;
+        }
       }
       imported += await this.upsert(batch);
     }
@@ -562,12 +586,14 @@ export class TrainingOffersService {
       runStartedAt,
       imported,
     );
+    await this.saveProviders(sirens, providers);
     return { imported, skipped, removed };
   }
 
   private fromApprentissage(
     item: ApprentissageItem,
     certifications: CertificationCodes,
+    providers: PublicProviders,
     now: number,
     seenAt: string,
   ): TrainingOffer | null {
@@ -644,12 +670,12 @@ export class TrainingOffersService {
       hours_max: null,
       cpf_eligible: false,
       apprentissage: true,
-      qualiopi:
-        typeof organisme.renseignements_specifiques?.qualiopi === 'boolean'
-          ? organisme.renseignements_specifiques.qualiopi
-          : null,
-      qualiopi_verified:
-        typeof organisme.renseignements_specifiques?.qualiopi === 'boolean',
+      // The catalogue's own flag only covers the "apprentissage" category:
+      // the public list says which categories the provider holds.
+      ...qualiopiFields(
+        text(uniteLegale.siren) ?? (siret ? siret.slice(0, 9) : null),
+        providers,
+      ),
       // France Compétences dates when the register has the code, otherwise
       // the catalogue's own flag (without dates: "inactive" stays to verify).
       ...withActive(
@@ -870,138 +896,99 @@ export class TrainingOffersService {
     return result(open.length > 1 ? 'ambiguous' : 'not_found');
   }
 
-  // ── Providers' Qualiopi certification ─────────────────────────────────────
+  // ── Providers' Qualiopi certification (public list) ─────────────────────
 
-  /** Qualiopi results already known, by siren. */
-  private async knownProviders(): Promise<Map<string, boolean>> {
-    const providers = new Map<string, boolean>();
+  /**
+   * Reads the public list of training providers. If it cannot be
+   * downloaded, the copy saved by the last import is used.
+   */
+  private async loadPublicProviders(): Promise<PublicProviders> {
+    if (
+      this.publicProviders &&
+      Date.now() - this.publicProviders.loadedAt < PUBLIC_PROVIDERS_TTL_MS
+    ) {
+      return this.publicProviders.value;
+    }
+    let value: PublicProviders;
+    try {
+      const csv = await withRetry('Public list of providers', async () => {
+        const response = await fetch(PUBLIC_PROVIDERS_URL);
+        if (!response.ok) {
+          throw new Error(`Public list failed (${response.status})`);
+        }
+        return response.text();
+      });
+      value = { loaded: true, bySiren: parsePublicProviders(csv) };
+      if (value.bySiren.size < 10_000) {
+        throw new Error(`Public list too short (${value.bySiren.size})`);
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.logger.warn(`Public list of providers unavailable: ${message}`);
+      value = await this.savedPublicProviders();
+    }
+    this.publicProviders = { value, loadedAt: Date.now() };
+    this.logger.log(
+      `Public list of providers: ${value.bySiren.size} providers${value.loaded ? '' : ' (not available)'}`,
+    );
+    return value;
+  }
+
+  /** The providers saved by the last import (for a failed download). */
+  private async savedPublicProviders(): Promise<PublicProviders> {
+    const bySiren = new Map<string, string[]>();
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await this.supabase
         .from('training_providers')
-        .select('siren, qualiopi')
-        .not('qualiopi', 'is', null)
+        .select('siren, qualiopi_categories, listed')
+        .not('listed', 'is', null)
         .order('siren')
         .range(from, from + pageSize - 1);
-      if (error) throw new Error(`Reading providers failed: ${error.message}`);
+      if (error) return { loaded: false, bySiren };
       for (const row of (data ?? []) as {
         siren: string;
-        qualiopi: boolean;
+        qualiopi_categories: string[] | null;
+        listed: boolean;
       }[]) {
-        providers.set(row.siren, row.qualiopi);
+        if (row.listed) bySiren.set(row.siren, row.qualiopi_categories ?? []);
       }
       if (!data || data.length < pageSize) break;
     }
-    return providers;
+    // Saved rows only cover our providers: absent ones stay unknown.
+    return { loaded: false, bySiren };
   }
 
   /**
-   * Checks in the company register whether Mon Compte Formation providers
-   * are Qualiopi-certified, then copies the result onto their offers.
-   * Returns how many providers were checked.
+   * Saves what the public list said for the providers of an import, as a
+   * copy in case the list cannot be downloaded next time.
    */
-  async checkProvidersQualiopi(limit: number): Promise<number> {
-    let checked = 0;
-    let updated = 0;
-    let stopped = false;
-    while (!stopped && checked < limit) {
-      const { data, error } = await this.supabase.rpc(
-        'training_providers_to_check',
-        { p_limit: Math.min(1000, limit - checked) },
-      );
-      if (error) throw new Error(`Listing providers failed: ${error.message}`);
-      const sirens = ((data ?? []) as { siren: string }[]).map((r) => r.siren);
-      if (!sirens.length) break;
-
-      for (let i = 0; i < sirens.length && !stopped; i += 10) {
-        const rows: {
-          siren: string;
-          qualiopi: boolean | null;
-          checked_at: string;
-        }[] = [];
-        // Small chunks: one big provider can have thousands of offers to update.
-        const chunk = sirens.slice(i, i + 10);
-        for (let j = 0; j < chunk.length; j += SITE_LOOKUPS_PER_SECOND) {
-          const started = Date.now();
-          const batch = chunk.slice(j, j + SITE_LOOKUPS_PER_SECOND);
-          const results = await Promise.all(
-            batch.map((siren) => this.findProviderQualiopi(siren)),
-          );
-          results.forEach((qualiopi, index) => {
-            if (qualiopi === undefined) return;
-            rows.push({
-              siren: batch[index],
-              qualiopi,
-              checked_at: new Date().toISOString(),
-            });
-          });
-          checked += batch.length;
-          if (results.some((qualiopi) => qualiopi === undefined)) {
-            this.logger.warn(
-              'Training providers: company register unavailable, stopping',
-            );
-            stopped = true;
-            break;
-          }
-          const wait = 1000 - (Date.now() - started);
-          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        }
-        if (!rows.length) continue;
-        await withRetry('Saving providers', async () => {
-          const { error: saveError } = await this.supabase
-            .from('training_providers')
-            .upsert(rows, { onConflict: 'siren' });
-          if (saveError) throw new Error(saveError.message);
-        });
-        const count = await withRetry('Applying providers', async () => {
-          const { data: applied, error: applyError } = await this.supabase.rpc(
-            'apply_training_providers',
-            { p_sirens: rows.map((row) => row.siren) },
-          );
-          if (applyError) throw new Error(applyError.message);
-          return Number(applied ?? 0);
-        });
-        updated += count;
-      }
-    }
-    this.logger.log(
-      `Training providers: ${checked} checked for Qualiopi, ${updated} offers updated`,
-    );
-    return checked;
-  }
-
-  /**
-   * est_qualiopi of a company in the register: true/false, null when the
-   * register does not know it, undefined when it cannot be reached.
-   */
-  private async findProviderQualiopi(
-    siren: string,
-  ): Promise<boolean | null | undefined> {
+  private async saveProviders(sirens: Set<string>, providers: PublicProviders) {
+    if (!providers.loaded) return;
+    const checkedAt = new Date().toISOString();
+    const rows = [...sirens].map((siren) => {
+      const categories = providers.bySiren.get(siren);
+      return {
+        siren,
+        listed: categories !== undefined,
+        qualiopi_categories: categories ?? [],
+        qualiopi: categories !== undefined && categories.length > 0,
+        checked_at: checkedAt,
+      };
+    });
     try {
-      const payload = await withRetry(
-        'Company register',
-        async () => {
-          const response = await fetch(
-            `${ENTREPRISES_URL}?${new URLSearchParams({ q: siren, per_page: '1' })}`,
-          );
-          if (response.status === 429 || response.status >= 500) {
-            throw new Error(`Company register busy (${response.status})`);
-          }
-          if (!response.ok) return {};
-          return (await response.json()) as {
-            results?: {
-              siren?: string;
-              complements?: { est_qualiopi?: boolean };
-            }[];
-          };
-        },
-        { tries: 4, delayMs: 20_000 },
-      );
-      const company = payload.results?.find((r) => r.siren === siren);
-      const qualiopi = company?.complements?.est_qualiopi;
-      return typeof qualiopi === 'boolean' ? qualiopi : null;
-    } catch {
-      return undefined;
+      for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+        await withRetry('Saving providers', async () => {
+          const { error } = await this.supabase
+            .from('training_providers')
+            .upsert(rows.slice(i, i + BATCH_SIZE), { onConflict: 'siren' });
+          if (error) throw new Error(error.message);
+        });
+      }
+    } catch (cause) {
+      // Only the fallback copy is missing; the offers are saved.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.logger.warn(`Saving providers failed: ${message}`);
     }
   }
 
@@ -1217,4 +1204,102 @@ function withActive(status: CertificationStatus) {
           ? false
           : null,
   };
+}
+
+/**
+ * Qualiopi of a provider from the public list. Not in the list: not a
+ * declared training provider (e.g. a public school). List unavailable and
+ * provider unknown: unknown.
+ */
+function qualiopiFields(siren: string | null, providers: PublicProviders) {
+  const categories = siren ? providers.bySiren.get(siren) : undefined;
+  if (categories) {
+    return {
+      qualiopi: categories.length > 0,
+      qualiopi_verified: true,
+      qualiopi_categories: categories,
+      provider_listed: true,
+    };
+  }
+  if (siren && providers.loaded) {
+    return {
+      qualiopi: false,
+      qualiopi_verified: true,
+      qualiopi_categories: [],
+      provider_listed: false,
+    };
+  }
+  return {
+    qualiopi: null,
+    qualiopi_verified: false,
+    qualiopi_categories: null,
+    provider_listed: null,
+  };
+}
+
+/** siren → Qualiopi categories, from the public list (CSV, ";"). */
+function parsePublicProviders(csv: string): Map<string, string[]> {
+  const rows = parseCsv(csv, ';');
+  const header = rows.next().value as string[] | undefined;
+  const providers = new Map<string, Set<string>>();
+  if (!header) return new Map();
+  const sirenColumn = header.indexOf('siren');
+  const categoryColumns = Object.entries(QUALIOPI_CATEGORIES)
+    .map(([column, category]) => [header.indexOf(column), category] as const)
+    .filter(([index]) => index >= 0);
+  if (sirenColumn < 0 || categoryColumns.length !== 4) {
+    throw new Error('Public list: unexpected columns');
+  }
+  for (const row of rows) {
+    const siren = row[sirenColumn]?.trim();
+    if (!siren || !/^\d{9}$/.test(siren)) continue;
+    // One provider can have several declarations: categories add up.
+    const categories = providers.get(siren) ?? new Set<string>();
+    for (const [index, category] of categoryColumns) {
+      if (row[index]?.trim() === 'true') categories.add(category);
+    }
+    providers.set(siren, categories);
+  }
+  return new Map(
+    [...providers].map(([siren, categories]) => [siren, [...categories]]),
+  );
+}
+
+/** Rows of a CSV text; fields may be quoted (with "" inside). */
+function* parseCsv(text: string, separator: string): Generator<string[]> {
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === separator) {
+      row.push(field);
+      field = '';
+    } else if (char === '\n' || char === '\r') {
+      if (char === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      yield row;
+      row = [];
+      field = '';
+    } else {
+      field += char;
+    }
+  }
+  if (field || row.length) {
+    row.push(field);
+    yield row;
+  }
 }
