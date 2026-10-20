@@ -59,6 +59,11 @@ interface TrainingOffer {
   /** true when qualiopi comes from a check (register or source). */
   qualiopi_verified: boolean;
   certification_active: boolean | null;
+  certification_status: CertificationStatus['status'];
+  registration_end: string | null;
+  delivery_until: string | null;
+  /** Main training topic (formacode) of a Mon Compte Formation offer. */
+  formacode_main: string | null;
   dedupe_key: string | null;
   last_seen_at: string;
   updated_at: string;
@@ -111,8 +116,27 @@ interface ApprentissageItem {
 }
 
 interface KoumoulLines {
-  results?: { NUMERO_FICHE?: string; ACTIF?: boolean }[];
+  results?: {
+    NUMERO_FICHE?: string;
+    ACTIF?: boolean;
+    date_fin_enregistrement?: string | null;
+    date_limite_delivrance?: string | null;
+  }[];
   next?: string;
+}
+
+interface RncpRegistration {
+  actif: boolean | null;
+  /** End of registration in the RNCP (YYYY-MM-DD). */
+  end: string | null;
+  /** Last day the certification can be awarded (YYYY-MM-DD). */
+  until: string | null;
+}
+
+interface CertificationStatus {
+  status: 'active' | 'deliverable' | 'to_verify' | 'expired' | null;
+  registration_end: string | null;
+  delivery_until: string | null;
 }
 
 interface SyncResult {
@@ -147,11 +171,12 @@ const MCF_FIELDS = [
   'frais_ttc_tot_max',
   'nombre_heures_total_min',
   'nombre_heures_total_max',
+  'code_formacode_1',
 ];
 const APPRENTISSAGE_URL =
   'https://api.apprentissage.beta.gouv.fr/api/formation/v1/search';
 const APPRENTISSAGE_PAGE_SIZE = 1000;
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = 500;
 /** Batches saved at the same time. */
 const PARALLEL_SAVES = 2;
 /**
@@ -173,8 +198,8 @@ const SITE_LOOKUPS_PER_SECOND = 3;
 const PROVIDERS_PER_RUN = 2000;
 
 interface CertificationCodes {
-  /** RNCP code → registration active, from France Compétences. */
-  rncp: Map<string, boolean>;
+  /** RNCP code → registration, from France Compétences. */
+  rncp: Map<string, RncpRegistration>;
   /** RS codes listed in CertifInfo. */
   rs: Set<string>;
 }
@@ -463,13 +488,18 @@ export class TrainingOffersService {
       // Only what the company register says; unknown until it is checked.
       qualiopi: (siren ? providers.get(siren) : undefined) ?? null,
       qualiopi_verified: !!siren && providers.has(siren),
-      // RNCP: France Compétences register. RS: listed in CertifInfo. A code
-      // found in neither stays unknown.
-      certification_active: codeRncp
-        ? (certifications.rncp.get(codeRncp) ?? null)
-        : codeRs && certifications.rs.has(codeRs)
-          ? true
-          : null,
+      // RNCP: France Compétences dates. RS: listed in CertifInfo (no dates
+      // published). A code found in neither stays unknown.
+      ...withActive(
+        codeRncp
+          ? rncpStatus(certifications.rncp.get(codeRncp))
+          : {
+              status: codeRs && certifications.rs.has(codeRs) ? 'active' : null,
+              registration_end: null,
+              delivery_until: null,
+            },
+      ),
+      formacode_main: text(row.code_formacode_1),
       dedupe_key: dedupeKey(siret, codeRncp, codeRs, title),
       last_seen_at: seenAt,
       updated_at: seenAt,
@@ -483,6 +513,7 @@ export class TrainingOffersService {
       throw new Error('APPRENTISSAGE_API_KEY is not set');
     }
     const now = Date.now();
+    const certifications = await this.certificationCodes();
     let imported = 0;
     let skipped = 0;
     let pageCount = 1;
@@ -514,7 +545,12 @@ export class TrainingOffersService {
 
       const batch: TrainingOffer[] = [];
       for (const item of payload.data ?? []) {
-        const offer = this.fromApprentissage(item, now, runStartedAt);
+        const offer = this.fromApprentissage(
+          item,
+          certifications,
+          now,
+          runStartedAt,
+        );
         if (offer) batch.push(offer);
         else skipped++;
       }
@@ -531,6 +567,7 @@ export class TrainingOffersService {
 
   private fromApprentissage(
     item: ApprentissageItem,
+    certifications: CertificationCodes,
     now: number,
     seenAt: string,
   ): TrainingOffer | null {
@@ -613,10 +650,23 @@ export class TrainingOffersService {
           : null,
       qualiopi_verified:
         typeof organisme.renseignements_specifiques?.qualiopi === 'boolean',
-      certification_active:
-        typeof certification.periode_validite?.rncp?.actif === 'boolean'
-          ? certification.periode_validite.rncp.actif
-          : null,
+      // France Compétences dates when the register has the code, otherwise
+      // the catalogue's own flag (without dates: "inactive" stays to verify).
+      ...withActive(
+        codeRncp && certifications.rncp.has(codeRncp)
+          ? rncpStatus(certifications.rncp.get(codeRncp))
+          : {
+              status:
+                certification.periode_validite?.rncp?.actif === true
+                  ? 'active'
+                  : certification.periode_validite?.rncp?.actif === false
+                    ? 'to_verify'
+                    : null,
+              registration_end: null,
+              delivery_until: null,
+            },
+      ),
+      formacode_main: null,
       dedupe_key: dedupeKey(
         siret ?? text(uniteLegale.siren),
         codeRncp,
@@ -1008,7 +1058,7 @@ export class TrainingOffersService {
     const codes: CertificationCodes = { rncp: new Map(), rs: new Set() };
 
     let url: string | undefined =
-      `${RNCP_REGISTER_URL}?size=10000&select=NUMERO_FICHE,ACTIF`;
+      `${RNCP_REGISTER_URL}?size=10000&select=NUMERO_FICHE,ACTIF,date_fin_enregistrement,date_limite_delivrance`;
     while (url) {
       const page: KoumoulLines = await withRetry('RNCP register', async () => {
         const response = await fetch(url!);
@@ -1019,8 +1069,12 @@ export class TrainingOffersService {
       });
       for (const row of page.results ?? []) {
         const code = text(row.NUMERO_FICHE)?.replace(/^RNCP/i, '');
-        if (code && typeof row.ACTIF === 'boolean') {
-          codes.rncp.set(code, row.ACTIF);
+        if (code) {
+          codes.rncp.set(code, {
+            actif: typeof row.ACTIF === 'boolean' ? row.ACTIF : null,
+            end: isoDate(row.date_fin_enregistrement),
+            until: isoDate(row.date_limite_delivrance),
+          });
         }
       }
       url = page.results?.length ? page.next : undefined;
@@ -1114,4 +1168,53 @@ async function withRetry<T>(
       await new Promise((resolve) => setTimeout(resolve, attempt * delayMs));
     }
   }
+}
+
+function isoDate(value: unknown): string | null {
+  const date = text(value)?.slice(0, 10);
+  return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+}
+
+/**
+ * Status of an RNCP certification from its official dates. The register's
+ * ACTIF flag is updated a few days after the dates, so the dates decide.
+ */
+function rncpStatus(
+  registration: RncpRegistration | undefined,
+): CertificationStatus {
+  if (!registration) {
+    return { status: null, registration_end: null, delivery_until: null };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const { actif, end, until } = registration;
+  const dates = { registration_end: end, delivery_until: until };
+  // Withdrawn before its end date: only the delivery date can keep it.
+  if (end && end >= today && actif !== false) {
+    return { status: 'active', ...dates };
+  }
+  if (until && until >= today) return { status: 'deliverable', ...dates };
+  if (until) return { status: 'expired', ...dates };
+  if (end && end >= today) return { status: 'to_verify', ...dates };
+  // Registration ended and no delivery date published.
+  if (end) return { status: actif ? 'to_verify' : 'expired', ...dates };
+  // No dates at all: only the flag.
+  return {
+    status: actif ? 'active' : actif === false ? 'expired' : null,
+    ...dates,
+  };
+}
+
+/** certification_active: the certification can be obtained. */
+function withActive(status: CertificationStatus) {
+  return {
+    certification_status: status.status,
+    registration_end: status.registration_end,
+    delivery_until: status.delivery_until,
+    certification_active:
+      status.status === 'active' || status.status === 'deliverable'
+        ? true
+        : status.status === 'expired'
+          ? false
+          : null,
+  };
 }
