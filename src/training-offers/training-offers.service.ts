@@ -41,6 +41,11 @@ interface TrainingOffer {
   lat: number | null;
   lng: number | null;
   location_precise: boolean;
+  /**
+   * training_site: training place given by the source; provider_site: the
+   * provider's only open site in the department; department: only that.
+   */
+  location_type: 'training_site' | 'provider_site' | 'department';
   remote: boolean;
   active_sessions: number;
   next_session_at: string | null;
@@ -51,7 +56,7 @@ interface TrainingOffer {
   cpf_eligible: boolean;
   apprentissage: boolean;
   qualiopi: boolean | null;
-  /** true when qualiopi comes from a check, not from the CPF rule. */
+  /** true when qualiopi comes from a check (register or source). */
   qualiopi_verified: boolean;
   certification_active: boolean | null;
   dedupe_key: string | null;
@@ -105,6 +110,11 @@ interface ApprentissageItem {
   sessions?: { debut?: string; fin?: string }[];
 }
 
+interface KoumoulLines {
+  results?: { NUMERO_FICHE?: string; ACTIF?: boolean }[];
+  next?: string;
+}
+
 interface SyncResult {
   imported: number;
   skipped: number;
@@ -143,7 +153,7 @@ const APPRENTISSAGE_URL =
 const APPRENTISSAGE_PAGE_SIZE = 1000;
 const BATCH_SIZE = 1000;
 /** Batches saved at the same time. */
-const PARALLEL_SAVES = 4;
+const PARALLEL_SAVES = 2;
 /**
  * Offers missing from an import are removed only if the import brought at
  * least this share of what is already stored: a source failing half-way
@@ -163,11 +173,14 @@ const SITE_LOOKUPS_PER_SECOND = 3;
 const PROVIDERS_PER_RUN = 2000;
 
 interface CertificationCodes {
-  /** RNCP codes published in CertifInfo. */
-  rncp: Set<string>;
+  /** RNCP code → registration active, from France Compétences. */
+  rncp: Map<string, boolean>;
   /** RS codes listed in CertifInfo. */
   rs: Set<string>;
 }
+
+const RNCP_REGISTER_URL =
+  'https://opendata.koumoul.com/data-fair/api/v1/datasets/competences-rncp/lines';
 
 interface ProviderSite {
   siren: string;
@@ -376,7 +389,7 @@ export class TrainingOffersService {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.logger.warn(`Training provider sites lookup failed: ${message}`);
     });
-    // A failed check only leaves Qualiopi "by the CPF rule".
+    // A failed check only leaves Qualiopi unknown for some providers.
     await this.checkProvidersQualiopi(PROVIDERS_PER_RUN).catch(
       (cause: unknown) => {
         const message = cause instanceof Error ? cause.message : String(cause);
@@ -436,6 +449,7 @@ export class TrainingOffersService {
       lat: site?.lat ?? null,
       lng: site?.lng ?? null,
       location_precise: !!site,
+      location_type: site ? 'provider_site' : 'department',
       remote: (num(row.nb_session_a_distance) ?? 0) > 0,
       active_sessions: num(row.nb_session_active) ?? 0,
       next_session_at: null,
@@ -443,17 +457,16 @@ export class TrainingOffersService {
       price_max: num(row.frais_ttc_tot_max),
       hours_min: num(row.nombre_heures_total_min),
       hours_max: num(row.nombre_heures_total_max),
-      // Every offer listed on Mon Compte Formation is CPF-eligible, and
-      // listing it requires Qualiopi certification of the provider (law
-      // since 2022). The company register confirms it per provider.
+      // Listed on Mon Compte Formation with an open session: CPF offer.
       cpf_eligible: true,
       apprentissage: false,
-      qualiopi: (siren ? providers.get(siren) : undefined) ?? true,
+      // Only what the company register says; unknown until it is checked.
+      qualiopi: (siren ? providers.get(siren) : undefined) ?? null,
       qualiopi_verified: !!siren && providers.has(siren),
-      // An RNCP code missing from CertifInfo is no longer published. RS
-      // codes not found stay unknown: CertifInfo lists them with a delay.
+      // RNCP: France Compétences register. RS: listed in CertifInfo. A code
+      // found in neither stays unknown.
       certification_active: codeRncp
-        ? certifications.rncp.has(codeRncp)
+        ? (certifications.rncp.get(codeRncp) ?? null)
         : codeRs && certifications.rs.has(codeRs)
           ? true
           : null,
@@ -580,6 +593,11 @@ export class TrainingOffersService {
       lat: Array.isArray(coordinates) ? (num(coordinates[1]) ?? null) : null,
       lng: Array.isArray(coordinates) ? (num(coordinates[0]) ?? null) : null,
       location_precise: Array.isArray(coordinates),
+      location_type: Array.isArray(item.lieu?.geolocalisation?.coordinates)
+        ? 'training_site'
+        : Array.isArray(coordinates)
+          ? 'provider_site'
+          : 'department',
       remote: item.modalite?.entierement_a_distance === true,
       active_sessions: openSessions.length,
       next_session_at: nextStart?.slice(0, 10) ?? null,
@@ -885,14 +903,15 @@ export class TrainingOffersService {
             .upsert(rows, { onConflict: 'siren' });
           if (saveError) throw new Error(saveError.message);
         });
-        const { data: count, error: applyError } = await this.supabase.rpc(
-          'apply_training_providers',
-          { p_sirens: rows.map((row) => row.siren) },
-        );
-        if (applyError) {
-          throw new Error(`Applying providers failed: ${applyError.message}`);
-        }
-        updated += Number(count ?? 0);
+        const count = await withRetry('Applying providers', async () => {
+          const { data: applied, error: applyError } = await this.supabase.rpc(
+            'apply_training_providers',
+            { p_sirens: rows.map((row) => row.siren) },
+          );
+          if (applyError) throw new Error(applyError.message);
+          return Number(applied ?? 0);
+        });
+        updated += count;
       }
     }
     this.logger.log(
@@ -981,28 +1000,44 @@ export class TrainingOffersService {
     return count ?? 0;
   }
 
-  /** Certification codes known to CertifInfo (public.certifications). */
+  /**
+   * Registration status of RNCP certifications (France Compétences, via
+   * Koumoul) and RS codes listed in CertifInfo (public.certifications).
+   */
   private async certificationCodes(): Promise<CertificationCodes> {
-    const codes: CertificationCodes = { rncp: new Set(), rs: new Set() };
+    const codes: CertificationCodes = { rncp: new Map(), rs: new Set() };
+
+    let url: string | undefined =
+      `${RNCP_REGISTER_URL}?size=10000&select=NUMERO_FICHE,ACTIF`;
+    while (url) {
+      const page: KoumoulLines = await withRetry('RNCP register', async () => {
+        const response = await fetch(url!);
+        if (!response.ok) {
+          throw new Error(`RNCP register failed (${response.status})`);
+        }
+        return (await response.json()) as KoumoulLines;
+      });
+      for (const row of page.results ?? []) {
+        const code = text(row.NUMERO_FICHE)?.replace(/^RNCP/i, '');
+        if (code && typeof row.ACTIF === 'boolean') {
+          codes.rncp.set(code, row.ACTIF);
+        }
+      }
+      url = page.results?.length ? page.next : undefined;
+    }
+
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await this.supabase
         .from('certifications')
-        .select('code_rncp, code_rs, etat_libelle')
-        .or('code_rncp.not.is.null,code_rs.not.is.null')
+        .select('code_rs')
+        .not('code_rs', 'is', null)
         .order('id')
         .range(from, from + pageSize - 1);
       if (error) {
         throw new Error(`Reading certifications failed: ${error.message}`);
       }
-      for (const row of (data ?? []) as {
-        code_rncp: string | null;
-        code_rs: string | null;
-        etat_libelle: string | null;
-      }[]) {
-        const rncp = text(row.code_rncp)?.replace(/^RNCP/i, '');
-        if (rncp && /^publi/i.test(row.etat_libelle ?? ''))
-          codes.rncp.add(rncp);
+      for (const row of (data ?? []) as { code_rs: string | null }[]) {
         const rs = text(row.code_rs)?.replace(/^RS/i, '');
         if (rs) codes.rs.add(rs);
       }
