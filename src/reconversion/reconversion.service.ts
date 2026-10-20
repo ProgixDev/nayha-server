@@ -50,8 +50,12 @@ interface CatalogueOffer {
   department: string | null;
   department_code: string | null;
   city: string | null;
-  /** true: city is the training site; false: only the department is known. */
-  location_precise: boolean;
+  /**
+   * training_site: training place given by the source; provider_site: the
+   * provider's only open site in the department (company register), not
+   * necessarily the classroom; department: only the department is known.
+   */
+  location_type: 'training_site' | 'provider_site' | 'department';
   remote: boolean;
   active_sessions: number;
   next_session_at: string | null;
@@ -1093,7 +1097,7 @@ export class ReconversionService {
         ? `${offer.department} (${offer.department_code})`
         : offer.department
       : null;
-    const lieu =
+    const place =
       [
         offer.city,
         offer.city?.toLowerCase() === offer.department?.toLowerCase()
@@ -1101,7 +1105,25 @@ export class ReconversionService {
           : department,
       ]
         .filter(Boolean)
-        .join(', ') || 'Lieu à confirmer';
+        .join(', ') || null;
+    // Says exactly what the place is: the training place, the provider's
+    // address, or only the department.
+    const localisation =
+      offer.location_type === 'training_site' && place
+        ? { type: 'lieu_formation', libelle: place }
+        : offer.location_type === 'provider_site' && place
+          ? {
+              type: 'adresse_organisme',
+              libelle: `Organisme situé à ${place}`,
+            }
+          : department
+            ? { type: 'departement', libelle: `Département : ${department}` }
+            : { type: 'inconnu', libelle: 'Lieu non renseigné' };
+    const qualiopiStatut = offer.qualiopi_verified
+      ? offer.qualiopi
+        ? 'certifie'
+        : 'non_certifie'
+      : 'inconnu';
     const prochaineSession = offer.next_session_at
       ? `Prochaine session : ${new Date(offer.next_session_at).toLocaleDateString('fr-FR')}`
       : offer.active_sessions > 0
@@ -1126,28 +1148,41 @@ export class ReconversionService {
       niveauCertification: offer.level ?? 'Niveau non renseigné',
       dateFinEnregistrement: '',
       dateLimiteDelivrance: '',
+      // France Compétences / CertifInfo; unknown stays unknown.
       isCertificationActive: offer.certification_active === true,
       rncpStatusVerified: offer.certification_active != null,
-      // Listed on Mon Compte Formation with an open session = CPF offer.
+      // On Mon Compte Formation with an open session: CPF offer. Otherwise
+      // nothing says it is CPF-fundable, so it is left to check.
       cpfEligibility: summary.cpfEligible ? 'eligible' : 'to_verify',
       cpfOfferVerified: summary.cpfEligible,
-      isQualiopi: summary.qualiopi,
-      // Mon Compte Formation lists only Qualiopi providers (law since 2022);
-      // "verified" only once the company register confirmed it.
+      // Only from the company register or API Apprentissage.
+      isQualiopi: summary.qualiopi && offer.qualiopi_verified,
       qualiopiVerified: offer.qualiopi_verified,
+      qualiopiStatut,
       isDistance: offer.remote,
-      distanceKm: summary.distanceKm,
-      localisationPrecise: offer.location_precise,
-      duree: duree ?? 'Durée selon parcours',
-      rythme: summary.apprentissage
-        ? 'Alternance / Formation continue'
-        : 'Temps plein / partiel',
-      format: offer.remote
-        ? offer.source === 'apprentissage'
-          ? '100% à distance'
-          : 'À distance possible'
-        : 'Présentiel / Mixte',
-      lieu,
+      // Distance to the place in localisation (none for a department).
+      distanceKm:
+        offer.location_type === 'department' ? null : summary.distanceKm,
+      localisation,
+      duree: duree ?? 'Durée non renseignée',
+      rythme:
+        [
+          summary.apprentissage ? 'Alternance' : null,
+          summary.cpfEligible ? 'Formation continue' : null,
+        ]
+          .filter(Boolean)
+          .join(' ou ') || 'Rythme non renseigné',
+      // Mon Compte Formation counts sessions given remotely; API
+      // Apprentissage only says whether the training is fully remote.
+      format:
+        offer.source === 'apprentissage'
+          ? offer.remote
+            ? '100% à distance'
+            : 'Pas entièrement à distance'
+          : offer.remote
+            ? 'Sessions à distance possibles'
+            : 'En présentiel',
+      lieu: localisation.libelle,
       prochaineSession,
       sessions: [],
       prix,
@@ -1246,8 +1281,8 @@ export class ReconversionService {
         formation['dateFinEnregistrement'] =
           certification['dateFinEnregistrement'];
         // France Compétences is the reference for the registration.
-        if (certification['actif'] === false) {
-          formation['isCertificationActive'] = false;
+        if (typeof certification['actif'] === 'boolean') {
+          formation['isCertificationActive'] = certification['actif'];
           formation['rncpStatusVerified'] = true;
         }
       }
