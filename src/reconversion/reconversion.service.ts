@@ -68,6 +68,10 @@ interface CatalogueOffer {
   qualiopi: boolean | null;
   /** true when qualiopi comes from a check, not from the CPF rule. */
   qualiopi_verified: boolean;
+  /** Qualiopi categories in the public list of providers (DGEFP). */
+  qualiopi_categories: string[] | null;
+  /** In the public list; false: not a declared provider; null: unknown. */
+  provider_listed: boolean | null;
   certification_active: boolean | null;
   /** From the official dates (France Compétences); null: no information. */
   certification_status:
@@ -1143,11 +1147,7 @@ export class ReconversionService {
           : department
             ? { type: 'departement', libelle: `Département : ${department}` }
             : { type: 'inconnu', libelle: 'Lieu non renseigné' };
-    const qualiopiStatut = offer.qualiopi_verified
-      ? offer.qualiopi
-        ? 'certifie'
-        : 'non_certifie'
-      : 'inconnu';
+    const qualiopi = this.qualiopiFields(offer);
     const prochaineSession = offer.next_session_at
       ? `Prochaine session : ${new Date(offer.next_session_at).toLocaleDateString('fr-FR')}`
       : offer.active_sessions > 0
@@ -1184,7 +1184,7 @@ export class ReconversionService {
       // Only from the company register or API Apprentissage.
       isQualiopi: summary.qualiopi && offer.qualiopi_verified,
       qualiopiVerified: offer.qualiopi_verified,
-      qualiopiStatut,
+      ...qualiopi,
       isDistance: offer.remote,
       // Distance to the place in localisation (none for a department).
       distanceKm:
@@ -1601,6 +1601,55 @@ export class ReconversionService {
       .trim();
     // Some sources write "-" or "." when there is nothing.
     return /[\p{L}\d]/u.test(text) && text.length > 2 ? text : '';
+  }
+
+  /**
+   * Qualiopi as the public list of training providers (DGEFP) states it,
+   * with its categories. For a work-study offer, the "apprentissage"
+   * category is the one that applies, so its absence is said.
+   */
+  private qualiopiFields(offer: CatalogueOffer) {
+    const labels: Record<string, string> = {
+      actions_de_formation: 'actions de formation',
+      bilans_de_competences: 'bilans de compétences',
+      vae: 'VAE',
+      apprentissage: 'apprentissage',
+    };
+    const categories = offer.qualiopi_categories ?? [];
+    if (offer.provider_listed == null) {
+      return {
+        qualiopiStatut: 'inconnu',
+        qualiopiCategories: [],
+        qualiopiLibelle: 'Certification Qualiopi non renseignée',
+      };
+    }
+    if (!offer.provider_listed) {
+      return {
+        qualiopiStatut: 'absent_liste',
+        qualiopiCategories: [],
+        qualiopiLibelle:
+          'Absent de la liste publique des organismes de formation',
+      };
+    }
+    if (!categories.length) {
+      return {
+        qualiopiStatut: 'non_certifie',
+        qualiopiCategories: [],
+        qualiopiLibelle:
+          'Organisme de formation déclaré, sans certification Qualiopi',
+      };
+    }
+    const missingApprentissage =
+      offer.source === 'apprentissage' && !categories.includes('apprentissage');
+    return {
+      qualiopiStatut: 'certifie',
+      qualiopiCategories: categories,
+      qualiopiLibelle: `Qualiopi : ${categories
+        .map((category) => labels[category] ?? category)
+        .join(
+          ', ',
+        )}${missingApprentissage ? ' (pas la catégorie apprentissage)' : ''}`,
+    };
   }
 
   /** Certification status as shown to users, with its official dates. */
