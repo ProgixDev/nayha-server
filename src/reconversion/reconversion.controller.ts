@@ -56,6 +56,25 @@ export class ReconversionController {
     });
   }
 
+  /**
+   * Certificates linked to the job by its official ROME formacodes (e.g.
+   * CACES for a cariste), shown apart from the trainings to the job.
+   */
+  @Get('formations/:codeRome/certificats-complementaires')
+  getCertificatsComplementaires(
+    @CurrentUser() user: AuthUser,
+    @Param('codeRome') codeRome: string,
+    @Query('after') after?: string,
+    @Query('modalite') modalite?: string,
+    @Query('rayonKm') rayonKm?: string,
+  ) {
+    return this.reconversionService.getCertificatsComplementaires(
+      user.id,
+      codeRome,
+      { after, modalite, rayonKm },
+    );
+  }
+
   /** Providers of one certification (certificationKey of a result), closest first. */
   @Get('formations/:codeRome/organismes')
   getFormationOrganismes(
@@ -65,12 +84,14 @@ export class ReconversionController {
     @Query('after') after?: string,
     @Query('modalite') modalite?: string,
     @Query('rayonKm') rayonKm?: string,
+    @Query('complementaire') complementaire?: string,
   ) {
     return this.reconversionService.getFormationOrganismes(user.id, codeRome, {
       certification,
       after,
       modalite,
       rayonKm,
+      complementaire,
     });
   }
 

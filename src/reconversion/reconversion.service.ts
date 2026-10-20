@@ -69,6 +69,12 @@ interface CatalogueOffer {
   /** true when qualiopi comes from a check, not from the CPF rule. */
   qualiopi_verified: boolean;
   certification_active: boolean | null;
+  /** From the official dates (France Compétences); null: no information. */
+  certification_status:
+    'active' | 'deliverable' | 'to_verify' | 'expired' | null;
+  registration_end: string | null;
+  delivery_until: string | null;
+  formacode_main: string | null;
 }
 
 /** What the search functions say about one certification or provider. */
@@ -225,6 +231,12 @@ export class ReconversionService {
     string,
     { value: boolean; checkedAt: number }
   >();
+  /**
+   * A formacode listed by more jobs than this is too general to link a
+   * certificate to one job (e.g. "Gestion des organisations": 79 jobs).
+   * Measured on the ROME formacodes; see PLAN_FORMATIONS.md.
+   */
+  private static readonly complementaryMaxJobsPerFormacode = 20;
   private static readonly detailsCacheTtlMs = 6 * 60 * 60 * 1000;
   private static readonly detailsCacheMaxSize = 5000;
   /** Live details of catalogue offers and certifications, by id or code. */
@@ -863,6 +875,8 @@ export class ReconversionService {
       modalite?: string;
       rayonKm: number | null;
       userCoordinates: Coordinates | null;
+      /** Complementary certificates: the job's formacodes (code → label). */
+      formacodes?: Map<string, string>;
     },
   ): Promise<FormationPage> {
     const offset = this.parseOffsetCursor(options.after);
@@ -876,6 +890,7 @@ export class ReconversionService {
       p_modalite: this.catalogueModalite(options.modalite),
       p_limit: pageSize,
       p_offset: offset,
+      p_formacodes: options.formacodes ? [...options.formacodes.keys()] : null,
     });
     if (error) {
       throw new Error(
@@ -926,6 +941,8 @@ export class ReconversionService {
         }),
       ];
     });
+    if (options.formacodes)
+      this.addJobLink(results, offers, options.formacodes);
     await this.enrichCatalogueFormations(results);
     const total = groups[0]?.total_groups ?? 0;
     const nextOffset = offset + groups.length;
@@ -948,9 +965,15 @@ export class ReconversionService {
       after?: string;
       modalite?: string;
       rayonKm?: string;
+      /** "true": the certification comes from the complementary list. */
+      complementaire?: string;
     },
   ) {
     const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const formacodes =
+      options.complementaire === 'true'
+        ? await this.complementaryFormacodes(codeRome)
+        : undefined;
     const groupKey = options.certification?.trim();
     if (!groupKey) throw new BadRequestException('Certification requise');
     const offset = this.parseOffsetCursor(options.after);
@@ -970,6 +993,7 @@ export class ReconversionService {
         p_modalite: this.catalogueModalite(options.modalite),
         p_limit: ReconversionService.formationsPageSize,
         p_offset: offset,
+        p_formacodes: formacodes ? [...formacodes.keys()] : null,
       },
     );
     if (error) {
@@ -1133,6 +1157,7 @@ export class ReconversionService {
     return {
       id: offer.id,
       source: offer.source,
+      typeOffre: 'formation',
       certificationKey: summary.groupKey,
       organismesCount: summary.groupe?.organismes ?? null,
       groupe: summary.groupe ?? null,
@@ -1146,11 +1171,12 @@ export class ReconversionService {
           ? `RS${offer.code_rs}`
           : '',
       niveauCertification: offer.level ?? 'Niveau non renseigné',
-      dateFinEnregistrement: '',
-      dateLimiteDelivrance: '',
-      // France Compétences / CertifInfo; unknown stays unknown.
-      isCertificationActive: offer.certification_active === true,
-      rncpStatusVerified: offer.certification_active != null,
+      dateFinEnregistrement: this.frenchDate(offer.registration_end),
+      dateLimiteDelivrance: this.frenchDate(offer.delivery_until),
+      // From the official dates; unknown stays unknown.
+      isCertificationActive: offer.certification_status === 'active',
+      rncpStatusVerified: offer.certification_status != null,
+      ...this.certificationStatusFields(offer),
       // On Mon Compte Formation with an open session: CPF offer. Otherwise
       // nothing says it is CPF-fundable, so it is left to check.
       cpfEligibility: summary.cpfEligible ? 'eligible' : 'to_verify',
@@ -1194,6 +1220,17 @@ export class ReconversionService {
       objectif: '',
       blocsCompetences: [],
       blocsCompetencesCodes: [],
+      prerequis: '',
+      capacitesAttestees: '',
+      activitesVisees: '',
+      emploisAccessibles: '',
+      codesRome: [],
+      formacodes: [],
+      statistiquesPromotions: null,
+      etatFiche: '',
+      cleMinistereEducatif: '',
+      uai: '',
+      adresse: '',
       formationContinue:
         summary.cpfEligible || (certification?.accessibilite_fc ?? 0) > 0,
       alternanceAccessible:
@@ -1271,6 +1308,15 @@ export class ReconversionService {
       );
       const offer = mcfOffers.get(id) ?? apprentissageOffers.get(id);
       Object.assign(formation, offer ?? {});
+      const localisation = formation['localisation'] as
+        { type: string; libelle: string } | undefined;
+      if (offer?.['adresse'] && localisation?.type === 'lieu_formation') {
+        formation['lieu'] = offer['adresse'];
+        formation['localisation'] = {
+          ...localisation,
+          libelle: offer['adresse'],
+        };
+      }
       if (certification) {
         const blocs = certification['blocsCompetences'] as string[];
         if (blocs.length) {
@@ -1278,12 +1324,18 @@ export class ReconversionService {
           formation['blocsCompetencesCodes'] =
             certification['blocsCompetencesCodes'];
         }
-        formation['dateFinEnregistrement'] =
-          certification['dateFinEnregistrement'];
-        // France Compétences is the reference for the registration.
-        if (typeof certification['actif'] === 'boolean') {
-          formation['isCertificationActive'] = certification['actif'];
-          formation['rncpStatusVerified'] = true;
+        // Registration dates come from the import (same register).
+        for (const field of [
+          'prerequis',
+          'capacitesAttestees',
+          'activitesVisees',
+          'emploisAccessibles',
+          'codesRome',
+          'formacodes',
+          'statistiquesPromotions',
+          'etatFiche',
+        ]) {
+          formation[field] = certification[field];
         }
       }
     }
@@ -1325,7 +1377,7 @@ export class ReconversionService {
     const query = new URLSearchParams({
       NUMERO_FICHE_in: missing.join(','),
       select:
-        'NUMERO_FICHE,ACTIF,date_fin_enregistrement,blocs_competences_libelles,blocs_competences_codes',
+        'NUMERO_FICHE,ACTIF,ETAT_FICHE,date_fin_enregistrement,date_limite_delivrance,prerequis_entree_formation,blocs_competences_libelles,blocs_competences_codes,CAPACITES_ATTESTEES,ACTIVITES_VISEES,TYPE_EMPLOI_ACCESSIBLES,CODES_ROME,formacodes,statistiques_promotions',
       size: String(missing.length),
     });
     try {
@@ -1347,6 +1399,15 @@ export class ReconversionService {
           blocsCompetencesCodes: this.splitValues(
             row['blocs_competences_codes'],
           ),
+          dateLimiteDelivrance: this.frenchDate(row['date_limite_delivrance']),
+          prerequis: this.plainText(row['prerequis_entree_formation']),
+          capacitesAttestees: this.plainText(row['CAPACITES_ATTESTEES']),
+          activitesVisees: this.plainText(row['ACTIVITES_VISEES']),
+          emploisAccessibles: this.plainText(row['TYPE_EMPLOI_ACCESSIBLES']),
+          codesRome: this.splitValues(row['CODES_ROME']),
+          formacodes: this.splitValues(row['formacodes']),
+          statistiquesPromotions: row['statistiques_promotions'] ?? null,
+          etatFiche: this.text(row['ETAT_FICHE']),
         };
         details.set(code, value);
         this.cacheDetails(code, value);
@@ -1491,7 +1552,19 @@ export class ReconversionService {
     const blocs = Array.isArray(certification.blocs_competences?.rncp)
       ? certification.blocs_competences.rncp
       : [];
+    const adresse = item.lieu?.adresse ?? {};
+    const adresseComplete = [
+      this.text(adresse.label),
+      this.text(adresse.code_postal),
+      this.text(adresse.commune?.nom),
+    ]
+      .filter(Boolean)
+      .join(', ');
     return {
+      cleMinistereEducatif: this.text(item.identifiant?.cle_ministere_educatif),
+      uai: this.text(organisme.identifiant?.uai),
+      // Street address of the training place, when the source gives it.
+      ...(adresseComplete ? { adresse: adresseComplete } : {}),
       contactEmail:
         this.text(item.contact?.email) ||
         this.text(organisme.contacts?.[0]?.email),
@@ -1528,6 +1601,134 @@ export class ReconversionService {
       .trim();
     // Some sources write "-" or "." when there is nothing.
     return /[\p{L}\d]/u.test(text) && text.length > 2 ? text : '';
+  }
+
+  /** Certification status as shown to users, with its official dates. */
+  private certificationStatusFields(offer: CatalogueOffer) {
+    const end = this.frenchDate(offer.registration_end);
+    const until = this.frenchDate(offer.delivery_until);
+    switch (offer.certification_status) {
+      case 'active':
+        return {
+          certificationStatut: 'active',
+          certificationStatutLibelle: end
+            ? `Certification enregistrée jusqu’au ${end}`
+            : 'Certification enregistrée',
+        };
+      case 'deliverable':
+        return {
+          certificationStatut: 'delivrable',
+          certificationStatutLibelle: end
+            ? `Enregistrement terminé le ${end} · certification délivrable jusqu’au ${until}`
+            : `Certification délivrable jusqu’au ${until}`,
+        };
+      case 'to_verify':
+        return {
+          certificationStatut: 'a_verifier',
+          certificationStatutLibelle: end
+            ? `Enregistrement terminé le ${end} · renouvellement non publié, à vérifier auprès de l’organisme`
+            : 'Statut de la certification à vérifier auprès de l’organisme',
+        };
+      default:
+        return {
+          certificationStatut: 'inconnu',
+          certificationStatutLibelle:
+            'Statut de la certification non renseigné',
+        };
+    }
+  }
+
+  /**
+   * The job's own formacodes (ROME, France Travail) that are specific
+   * enough to link a certificate to it. Empty when there are none.
+   */
+  private async complementaryFormacodes(
+    codeRome: string,
+  ): Promise<Map<string, string>> {
+    const { data, error } = await this.supabase
+      .from('rome_metiers')
+      .select('data')
+      .eq('code', codeRome)
+      .maybeSingle();
+    if (error) {
+      throw new Error(`Métier ${codeRome} indisponible: ${error.message}`);
+    }
+    const listed = new Map<string, string>();
+    const formacodes = (data?.data as Record<string, any> | undefined)
+      ?.formacodes;
+    for (const item of Array.isArray(formacodes) ? formacodes : []) {
+      const code = this.text(item?.code);
+      if (code) listed.set(code, this.text(item?.libelle));
+    }
+    if (!listed.size) return listed;
+
+    const { data: counts, error: countError } = await this.supabase.rpc(
+      'rome_formacode_job_counts',
+      { p_formacodes: [...listed.keys()] },
+    );
+    if (countError) {
+      throw new Error(`Formacodes indisponibles: ${countError.message}`);
+    }
+    const specific = new Map<string, string>();
+    for (const row of (counts ?? []) as { formacode: string; jobs: number }[]) {
+      if (
+        row.jobs <= ReconversionService.complementaryMaxJobsPerFormacode &&
+        listed.has(row.formacode)
+      ) {
+        specific.set(row.formacode, listed.get(row.formacode)!);
+      }
+    }
+    return specific;
+  }
+
+  /** Says why a complementary certificate is linked to the job. */
+  private addJobLink(
+    results: Record<string, unknown>[],
+    offers: Map<string, CatalogueOffer>,
+    formacodes: Map<string, string>,
+  ) {
+    for (const result of results) {
+      const code = offers.get(String(result['id']))?.formacode_main;
+      if (!code) continue;
+      const libelle = formacodes.get(code) ?? '';
+      result['typeOffre'] = 'certificat_complementaire';
+      result['lienMetier'] = {
+        formacode: code,
+        libelle,
+        explication: `Domaine de formation « ${libelle} », associé à ce métier dans le référentiel ROME de France Travail.`,
+      };
+    }
+  }
+
+  /**
+   * Certificates (mostly RS) that are not a path to the job but are linked
+   * to it by the official ROME formacodes, e.g. CACES for a cariste.
+   */
+  async getCertificatsComplementaires(
+    userId: string,
+    rawCodeRome: string,
+    options: { after?: string; modalite?: string; rayonKm?: string } = {},
+  ) {
+    const codeRome = this.normalizeCodeRome(rawCodeRome);
+    const formacodes = await this.complementaryFormacodes(codeRome);
+    const domaines = [...formacodes].map(([code, libelle]) => ({
+      formacode: code,
+      libelle,
+    }));
+    if (!formacodes.size) {
+      return { source: 'catalogue', domaines, results: [], nextCursor: null };
+    }
+    const rayonKm = this.parseRayonKm(options.rayonKm);
+    const userCoordinates =
+      rayonKm == null ? null : await this.getUserCityCoordinates(userId);
+    const page = await this.getCatalogueFormationPage(codeRome, {
+      after: options.after,
+      modalite: options.modalite,
+      rayonKm,
+      userCoordinates,
+      formacodes,
+    });
+    return { ...page, domaines };
   }
 
   private catalogueModalite(raw: string | undefined): string | null {
