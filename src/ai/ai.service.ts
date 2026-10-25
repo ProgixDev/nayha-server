@@ -1512,7 +1512,8 @@ Génère son Portrait de Force. Rappel : tutoie-la, ancre chaque compétence dan
     userId: string,
     offers: string[],
   ): Promise<AnalyseOffresResult> {
-    await this.checkSubscription(userId);
+    // DEMO: temporarily free; restore this check after the demonstration.
+    // await this.checkSubscription(userId);
     if (!offers || offers.length === 0) {
       throw new BadRequestException('Veuillez fournir au moins une offre.');
     }
