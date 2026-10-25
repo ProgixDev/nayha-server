@@ -36,7 +36,8 @@ export class AiController {
     return this.aiService.getPlanAction(user.id);
   }
 
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('evaluate')
   evaluateAdequation(
     @CurrentUser() user: AuthUser,
@@ -45,7 +46,8 @@ export class AiController {
     return this.aiService.evaluateAdequation(user.id, metierId);
   }
 
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('analyse-offres')
   generateAnalyseOffres(
     @CurrentUser() user: AuthUser,
