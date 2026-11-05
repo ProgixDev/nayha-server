@@ -4,7 +4,8 @@ import {
   AuthUser,
 } from '../auth/decorators/current-user.decorator';
 import { SupabaseJwtGuard } from '../auth/guards/supabase-jwt.guard';
-import { PaidFeature } from '../subscriptions/paid-feature.decorator';
+// DEMO: restore with the @PaidFeature guards below after the demonstration.
+// import { PaidFeature } from '../subscriptions/paid-feature.decorator';
 import { PaidFeatureGuard } from '../subscriptions/paid-feature.guard';
 import { CreationService } from './creation.service';
 import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
@@ -35,21 +36,24 @@ export class CreationController {
   }
 
   /** Send a contextual creation-flow question to the AI coach. */
-  @PaidFeature('chat')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('chat')
   @Post('coach')
   coach(@CurrentUser() user: AuthUser, @Body() dto: CreationCoachMessageDto) {
     return this.creationService.coach(user.id, dto);
   }
 
   /** Generate activity ideas from the user's completed diagnostics. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('activity-suggestions')
   activitySuggestions(@CurrentUser() user: AuthUser) {
     return this.creationService.generateActivitySuggestions(user.id);
   }
 
   /** Draft market-step starting points (problem, places, alternatives) from the idea. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('market-starter')
   marketStarter(
     @CurrentUser() user: AuthUser,
@@ -59,7 +63,8 @@ export class CreationController {
   }
 
   /** Draft the step 4 offer and a realistic price range from steps 1 to 3. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('offer-starter')
   offerStarter(
     @CurrentUser() user: AuthUser,
@@ -69,7 +74,8 @@ export class CreationController {
   }
 
   /** List the rules specific to this activity to check before creating it. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('demarches-starter')
   demarchesStarter(
     @CurrentUser() user: AuthUser,
@@ -79,7 +85,8 @@ export class CreationController {
   }
 
   /** Draft first commercial actions and an announcement message. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('contacts-starter')
   contactsStarter(
     @CurrentUser() user: AuthUser,
@@ -89,7 +96,8 @@ export class CreationController {
   }
 
   /** Critique a finished phase before the person builds on it. */
-  @PaidFeature('assist')
+  // DEMO: temporarily free; restore the paid guard after the demonstration.
+  // @PaidFeature('assist')
   @Post('phase-review')
   phaseReview(
     @CurrentUser() user: AuthUser,
