@@ -14,6 +14,18 @@ import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
 import { CreationJourneyContextDto } from './dto/creation-journey-context.dto';
 import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
+import {
+  buildReview,
+  currentReview,
+  offerFigures,
+  PhaseReview,
+  reviewAllowsNextPhase,
+  reviewOpensStep,
+  ReviewPhase,
+  reviewPhases,
+  reviewPhaseSteps,
+  ruleIssues,
+} from './phase-review';
 
 type JourneySection = Record<string, unknown>;
 export interface CreationJourney {
@@ -24,6 +36,10 @@ export interface CreationJourney {
   statut: JourneySection | null;
   demarches: JourneySection | null;
   contacts: JourneySection | null;
+  /** Weekly results after the launch, outside the 7 steps. */
+  suivi?: JourneySection | null;
+  /** End-of-phase reviews still matching the answers they were based on. */
+  reviews?: Partial<Record<ReviewPhase, PhaseReview>>;
   updatedAt?: string;
 }
 
@@ -163,6 +179,83 @@ function pickHints(value: unknown, keys: string[]): Record<string, string> {
   }
   return hints;
 }
+
+/** What each end-of-phase review asks the AI to look at. */
+const phaseReviewPrompts: Record<
+  ReviewPhase,
+  {
+    role: string;
+    checks: string;
+    blocking: string;
+    verdict: string;
+    steps: string;
+    context: (journey: CreationJourney) => unknown;
+  }
+> = {
+  valider: {
+    role: `Tu es une conseillère en création d'entreprise en France, bienveillante mais franche. Une personne en reconversion a décrit sa situation (étape 1), son idée d'activité (étape 2) et son premier test de marché (étape 3). Ton rôle : relire ce projet AVANT qu'elle construise son offre, et lui dire honnêtement ce qui tient et ce qui doit être corrigé. `,
+    checks: `1) la faisabilité réelle (diplôme, carte professionnelle, autorisation, assurance obligatoire, normes d'hygiène ou de sécurité propres à CETTE activité) ; 2) les risques juridiques, de santé ou de sécurité pour elle ou ses clients ; 3) la cohérence entre l'idée, le public visé et le canal ; 4) la clarté de l'idée et du problème client ; 5) ce que disent réellement les retours de son test ; 6) la compatibilité avec son temps, son budget et son besoin de revenus.`,
+    blocking: `uniquement si l'activité est illégale, dangereuse, ou impossible sans une condition que la personne ne semble pas remplir (ex. un diplôme obligatoire)`,
+    verdict: `"go" si le projet peut passer à l'offre tel quel, "adjust" s'il faut corriger quelques points, "rethink" si l'idée elle-même pose un problème de fond.`,
+    steps: '1',
+    context: (journey) => ({
+      situation: journey.situation,
+      activite: journey.activite,
+      marche: journey.marche,
+    }),
+  },
+  construire: {
+    role: `Tu es une conseillère en création d'entreprise en France, bienveillante mais franche. Une personne en reconversion a construit son offre et son prix (étape 4) puis choisi comment se lancer et quelles aides regarder (étape 5). Ton rôle : vérifier que ce modèle peut réellement la faire vivre AVANT qu'elle fasse ses démarches officielles, et lui dire honnêtement ce qui doit être corrigé. Les chiffres calculés ("chiffres") sont exacts : appuie-toi dessus, ne les recalcule pas. `,
+    checks: `1) le prix face aux solutions existantes repérées sur le terrain et à ce que son public peut payer ; 2) la clarté de l'offre : ce que le client reçoit, pour qui, et ce que ça change pour lui ; 3) le réalisme du nombre de ventes par mois pour quelqu'un qui démarre ; 4) l'adéquation du cadre choisi (micro-entreprise, couveuse ou coopérative, portage salarial, société) avec l'activité, les montants et la situation de la personne ; 5) les aides retenues : sont-elles cohérentes avec sa situation (ex. ARE et ARCE seulement pour une personne indemnisée par France Travail) ; 6) les obligations propres à ce cadre ou à cette activité qu'elle risque d'oublier (assurance, TVA si les montants s'en approchent, facturation).`,
+    blocking: `uniquement si le modèle ne peut pas fonctionner tel quel (ex. le cadre choisi est interdit pour cette activité, ou l'offre ne peut pas dégager de revenu)`,
+    verdict: `"go" si elle peut passer à ses démarches tel quel, "adjust" s'il faut corriger quelques points, "rethink" si l'offre ou le cadre pose un problème de fond.`,
+    steps: '4',
+    context: (journey) => ({
+      situation: journey.situation,
+      idee: journey.activite?.ideaDescription,
+      marche: journey.marche
+        ? {
+            customerProblem: journey.marche.customerProblem,
+            competitors: journey.marche.competitors,
+          }
+        : null,
+      offre: journey.offre,
+      statut: journey.statut,
+      chiffres: offerFigures(journey),
+    }),
+  },
+  lancer: {
+    role: `Tu es une conseillère en création d'entreprise en France, bienveillante mais franche. Une personne en reconversion a listé ses démarches officielles (étape 6) et préparé la recherche de ses premiers clients (étape 7). Ton rôle : vérifier qu'elle est prête à lancer son activité en règle et à trouver ses premiers clients, et lui dire honnêtement ce qui manque. `,
+    checks: `1) les obligations propres à CETTE activité à remplir avant la première vente et absentes de sa liste (assurance obligatoire, déclaration, diplôme, hygiène, mentions sur les factures) ; 2) l'adéquation des actions commerciales avec son public et son offre : vont-elles vraiment toucher les personnes repérées à l'étape 3 ? ; 3) le réalisme du rythme d'actions par rapport à son temps disponible ; 4) la clarté de son message d'annonce ; 5) ce qu'elle devrait suivre chaque semaine pour savoir si ça marche.`,
+    blocking: `uniquement si elle s'apprête à exercer sans une obligation légale indispensable à CETTE activité (ex. une assurance ou un diplôme obligatoire)`,
+    verdict: `"go" si elle peut se lancer, "adjust" s'il reste des points à régler en démarrant, "rethink" si son plan de lancement ne peut pas fonctionner tel quel.`,
+    steps: '6',
+    context: (journey) => ({
+      situation: journey.situation
+        ? { weeklyHours: journey.situation.weeklyHours }
+        : null,
+      activite: journey.activite,
+      marche: journey.marche
+        ? {
+            customerProblem: journey.marche.customerProblem,
+            customerLocations: journey.marche.customerLocations,
+          }
+        : null,
+      offre: journey.offre
+        ? {
+            offerTitle: journey.offre.offerTitle,
+            targetCustomer: journey.offre.targetCustomer,
+            proposedPrice: journey.offre.proposedPrice,
+          }
+        : null,
+      statut: journey.statut
+        ? { chosenFramework: journey.statut.chosenFramework }
+        : null,
+      demarches: journey.demarches,
+      contacts: journey.contacts,
+    }),
+  },
+};
 
 @Injectable()
 export class CreationService {
@@ -847,7 +940,7 @@ export class CreationService {
     userId: string,
     dto: UpdateCreationJourneyDto,
   ): Promise<CreationJourney> {
-    if (!journeySteps.some((step) => dto[step])) {
+    if (!journeySteps.some((step) => dto[step]) && !dto.suivi) {
       throw new BadRequestException('Aucune étape à enregistrer');
     }
 
@@ -884,6 +977,23 @@ export class CreationService {
       ) {
         throw new BadRequestException(missingPreviousStep[step]);
       }
+      // A phase opens once the previous phase's review is done, and read
+      // when it raised serious points. A step already confirmed (before
+      // reviews existed) can still be revised.
+      const gate = reviewPhases.find(
+        (phase) => reviewOpensStep[phase] === step,
+      );
+      if (
+        gate &&
+        current[step]?.isConfirmed !== true &&
+        !reviewAllowsNextPhase(
+          currentReview(gate, next, current.reviews?.[gate]),
+        )
+      ) {
+        throw new BadRequestException(
+          `Fais d'abord le bilan de la phase ${reviewPhases.indexOf(gate) + 1} avant de continuer`,
+        );
+      }
       next[step] = validators[step](input);
       // Revising a confirmed step reopens every later step, because they
       // were built on the previous answers.
@@ -898,6 +1008,64 @@ export class CreationService {
       }
     });
 
+    if (dto.suivi) {
+      if (
+        current.contacts?.isConfirmed !== true &&
+        next.contacts?.isConfirmed !== true
+      ) {
+        throw new BadRequestException(
+          "Termine ton parcours avant de suivre tes semaines d'activité",
+        );
+      }
+      next.suivi = this.validateSuivi(dto.suivi);
+    }
+
+    return this.saveJourney(userId, next);
+  }
+
+  /** Up to two years of weekly figures the person notes after launching. */
+  private validateSuivi(input: JourneySection): JourneySection {
+    this.rejectUnknownKeys(input, ['checkIns']);
+    const checkIns = input.checkIns ?? [];
+    if (!Array.isArray(checkIns) || checkIns.length > 104) {
+      throw new BadRequestException('Suivi hebdomadaire invalide');
+    }
+    for (const raw of checkIns as unknown[]) {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new BadRequestException('Semaine de suivi invalide');
+      }
+      const week = raw as Record<string, unknown>;
+      this.rejectUnknownKeys(week, [
+        'weekStart',
+        'contacts',
+        'meetings',
+        'offers',
+        'sales',
+        'revenue',
+        'note',
+      ]);
+      if (
+        typeof week.weekStart !== 'string' ||
+        Number.isNaN(Date.parse(week.weekStart))
+      ) {
+        throw new BadRequestException('Date de semaine invalide');
+      }
+      for (const key of ['contacts', 'meetings', 'offers', 'sales']) {
+        this.validateNumber(week[key], key, 0, 10_000);
+      }
+      this.validateNumber(week.revenue, 'revenue', 0, 10_000_000);
+      this.validateOptionalString(week.note, 'note');
+      if (typeof week.note === 'string' && week.note.length > 500) {
+        throw new BadRequestException('Note trop longue');
+      }
+    }
+    return { checkIns };
+  }
+
+  private async saveJourney(
+    userId: string,
+    next: CreationJourney,
+  ): Promise<CreationJourney> {
     next.updatedAt = new Date().toISOString();
     const { data, error } = await this.supabase
       .from('user_profiles')
@@ -917,9 +1085,82 @@ export class CreationService {
     return this.normalizeJourney(data.creation_journey);
   }
 
+  /**
+   * Critiques the phase's answers before the person builds on them: fixed
+   * rules for what arithmetic shows, the AI for what needs reading.
+   */
+  async generatePhaseReview(
+    userId: string,
+    phase: ReviewPhase,
+  ): Promise<PhaseReview> {
+    const journey = await this.getJourney(userId);
+    const existing = journey.reviews?.[phase];
+    if (existing) return existing;
+
+    const steps = reviewPhaseSteps[phase];
+    if (steps.some((step) => journey[step]?.isConfirmed !== true)) {
+      throw new BadRequestException(
+        'Termine les étapes de cette phase avant de demander ton bilan',
+      );
+    }
+
+    const rules = ruleIssues(phase, journey);
+    const prompt = phaseReviewPrompts[phase];
+    let ai: Record<string, unknown> | null = null;
+    try {
+      ai = await this.askJson(
+        'Phase review',
+        prompt.role +
+          `Tutoie. Critique le projet, jamais la personne. ` +
+          `Examine : ${prompt.checks} ` +
+          `Des contrôles automatiques ont déjà relevé ces points, ne les répète pas : ${rules.map((issue) => issue.title).join(' ; ') || 'aucun'}. ` +
+          `Gravité : "blocking" ${prompt.blocking} ; "important" si cela compromet la réussite sans correction ; "minor" pour un conseil d'amélioration. N'invente aucun problème : si le projet est solide, dis-le. N'invente ni loi, ni montant, ni chiffre ; en cas de doute écris "à vérifier auprès de …". ` +
+          `Verdict : ${prompt.verdict} ` +
+          groundingRule +
+          `Réponds uniquement en JSON : {"verdict":"go|adjust|rethink","summary":"2 phrases maximum, directes et encourageantes","strengths":["2 à 3 points forts propres à ce projet"],"issues":[{"severity":"blocking|important|minor","step":${prompt.steps},"title":"titre court","problem":"ce qui pose problème, pour ce projet précis","suggestion":"ce qu'elle peut corriger concrètement"}],"questions":["0 à 3 questions auxquelles elle devrait pouvoir répondre avant d'aller plus loin"]}`,
+        prompt.context(journey),
+        1200,
+        0.3,
+      );
+    } catch {
+      // The fixed rules still give a useful review when the AI is down.
+      this.logger.warn('Phase review without AI: generation failed');
+    }
+
+    const review = buildReview(phase, journey, rules, ai);
+    await this.saveJourney(userId, {
+      ...journey,
+      reviews: { ...journey.reviews, [phase]: review },
+    });
+    return review;
+  }
+
+  /** The person read a serious review and chooses to go on anyway. */
+  async acknowledgePhaseReview(
+    userId: string,
+    phase: ReviewPhase,
+  ): Promise<PhaseReview> {
+    const journey = await this.getJourney(userId);
+    const review = journey.reviews?.[phase];
+    if (!review) {
+      throw new BadRequestException(
+        'Ce bilan a changé avec tes réponses : refais-le avant de continuer',
+      );
+    }
+    const acknowledged = {
+      ...review,
+      acknowledgedAt: review.acknowledgedAt ?? new Date().toISOString(),
+    };
+    await this.saveJourney(userId, {
+      ...journey,
+      reviews: { ...journey.reviews, [phase]: acknowledged },
+    });
+    return acknowledged;
+  }
+
   private normalizeJourney(value: unknown): CreationJourney {
     const journey = this.asObject(value);
-    return {
+    const normalized: CreationJourney = {
       situation: this.asObjectOrNull(journey.situation),
       activite: this.asObjectOrNull(journey.activite),
       marche: this.asObjectOrNull(journey.marche),
@@ -927,10 +1168,20 @@ export class CreationService {
       statut: this.asObjectOrNull(journey.statut),
       demarches: this.asObjectOrNull(journey.demarches),
       contacts: this.asObjectOrNull(journey.contacts),
+      suivi: this.asObjectOrNull(journey.suivi),
       ...(typeof journey.updatedAt === 'string'
         ? { updatedAt: journey.updatedAt }
         : {}),
     };
+    // A review written from answers that changed since is dropped.
+    const stored = this.asObject(journey.reviews);
+    const reviews: Partial<Record<ReviewPhase, PhaseReview>> = {};
+    for (const phase of reviewPhases) {
+      const review = currentReview(phase, normalized, stored[phase]);
+      if (review) reviews[phase] = review;
+    }
+    normalized.reviews = reviews;
+    return normalized;
   }
 
   private validateSituation(input: JourneySection): JourneySection {

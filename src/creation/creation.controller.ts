@@ -11,6 +11,7 @@ import { CreationCoachMessageDto } from './dto/creation-coach-message.dto';
 import { CreationMarketStarterDto } from './dto/creation-market-starter.dto';
 import { CreationJourneyContextDto } from './dto/creation-journey-context.dto';
 import { CreationOfferStarterDto } from './dto/creation-offer-starter.dto';
+import { CreationPhaseReviewDto } from './dto/creation-phase-review.dto';
 import { UpdateCreationJourneyDto } from './dto/update-creation-journey.dto';
 
 @Controller('creation')
@@ -85,5 +86,24 @@ export class CreationController {
     @Body() dto: CreationJourneyContextDto,
   ) {
     return this.creationService.generateContactsStarter(user.id, dto);
+  }
+
+  /** Critique a finished phase before the person builds on it. */
+  @PaidFeature('assist')
+  @Post('phase-review')
+  phaseReview(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationPhaseReviewDto,
+  ) {
+    return this.creationService.generatePhaseReview(user.id, dto.phase);
+  }
+
+  /** Go on despite a serious review, after reading it. */
+  @Post('phase-review/acknowledge')
+  acknowledgePhaseReview(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreationPhaseReviewDto,
+  ) {
+    return this.creationService.acknowledgePhaseReview(user.id, dto.phase);
   }
 }

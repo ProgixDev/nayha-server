@@ -29,4 +29,9 @@ export class UpdateCreationJourneyDto {
   @IsOptional()
   @IsObject()
   contacts?: Record<string, unknown>;
+
+  /** Weekly follow-up once the journey is done; not a journey step. */
+  @IsOptional()
+  @IsObject()
+  suivi?: Record<string, unknown>;
 }
