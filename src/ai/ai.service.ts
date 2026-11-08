@@ -542,7 +542,7 @@ Le profil contient un Portrait de Force avec des données enrichies. Tu DOIS les
   "vaePossible": false,
   "messagePersonnalise": "2-3 phrases personnalisées, tutoiement, ancrées dans son profil",
   "pointsForts": [
-    { "label": "Compétence ancrée dans son vécu" }
+    { "label": "Compétence ancrée dans son vécu, en une phrase de 15 mots maximum" }
   ],
   "renforcement": {
     "element": "Nom de la compétence/outil à renforcer",
