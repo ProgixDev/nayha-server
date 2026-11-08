@@ -1119,8 +1119,12 @@ export class CreationService {
           `Des contrôles automatiques ont déjà relevé ces points, ne les répète pas : ${rules.map((issue) => issue.title).join(' ; ') || 'aucun'}. ` +
           `Gravité : "blocking" ${prompt.blocking} ; "important" si cela compromet la réussite sans correction ; "minor" pour un conseil d'amélioration. N'invente aucun problème : si le projet est solide, dis-le. N'invente ni loi, ni montant, ni chiffre ; en cas de doute écris "à vérifier auprès de …". ` +
           `Verdict : ${prompt.verdict} ` +
+          // A strength is something she entered, never a guess: a picked
+          // problem is not a validated need, and no market trend is invented.
+          `Points forts : cite uniquement ce que la personne a réellement renseigné ou constaté (problème choisi, endroits repérés, échanges notés, décisions). N'écris jamais qu'un besoin est "identifié", "validé" ou "confirmé" si aucun échange n'a été noté ; un problème choisi reste une hypothèse. N'affirme aucune tendance ni taille de marché ("en pleine expansion", "en croissance"…). Un point fort ne doit jamais contredire un point à travailler. ` +
+          `Résumé : une phrase concrète sur CE projet, pas un conseil général (pas de "définis bien ton public cible"). ` +
           groundingRule +
-          `Réponds uniquement en JSON : {"verdict":"go|adjust|rethink","summary":"2 phrases maximum, directes et encourageantes","strengths":["2 à 3 points forts propres à ce projet"],"issues":[{"severity":"blocking|important|minor","step":${prompt.steps},"title":"titre court","problem":"ce qui pose problème, pour ce projet précis","suggestion":"ce qu'elle peut corriger concrètement"}],"questions":["0 à 3 questions auxquelles elle devrait pouvoir répondre avant d'aller plus loin"]}`,
+          `Réponds uniquement en JSON : {"verdict":"go|adjust|rethink","summary":"1 phrase concrète, directe et encourageante","strengths":["2 à 3 points forts propres à ce projet"],"issues":[{"severity":"blocking|important|minor","step":${prompt.steps},"title":"titre court","problem":"ce qui pose problème, pour ce projet précis","suggestion":"ce qu'elle peut corriger concrètement"}],"questions":["0 à 3 questions auxquelles elle devrait pouvoir répondre avant d'aller plus loin"]}`,
         prompt.context(journey),
         1200,
         0.3,
