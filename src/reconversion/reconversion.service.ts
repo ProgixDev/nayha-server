@@ -348,6 +348,9 @@ export class ReconversionService {
         evaluation,
       ),
       pointsAppui: evaluation.pointsForts.map((point) => point.label),
+      // What the job-fit evaluation concludes: apply now, apply while
+      // strengthening one point, or train first.
+      sortie: evaluation.sortie,
       vae: {
         pertinentePourLeProfil: evaluation.vaePossible === true,
         certificationsAccessibles: certifications
