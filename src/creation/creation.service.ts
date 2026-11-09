@@ -95,6 +95,8 @@ const variableCostModels = ['ratioOfRevenue', 'perUnit'];
 const frameworkTypes = [
   'microEntreprise',
   'couveuseCae',
+  'cae',
+  'artisteAuteur',
   'portageSalarial',
   'societeUnipersonnelle',
 ];
@@ -206,7 +208,7 @@ const phaseReviewPrompts: Record<
   },
   construire: {
     role: `Tu es une conseillère en création d'entreprise en France, bienveillante mais franche. Une personne en reconversion a construit son offre et son prix (étape 4) puis choisi comment se lancer et quelles aides regarder (étape 5). Ton rôle : vérifier que ce modèle peut réellement la faire vivre AVANT qu'elle fasse ses démarches officielles, et lui dire honnêtement ce qui doit être corrigé. Les chiffres calculés ("chiffres") sont exacts : appuie-toi dessus, ne les recalcule pas. `,
-    checks: `1) le prix face aux solutions existantes repérées sur le terrain et à ce que son public peut payer ; 2) la clarté de l'offre : ce que le client reçoit, pour qui, et ce que ça change pour lui ; 3) le réalisme du nombre de ventes par mois pour quelqu'un qui démarre ; 4) l'adéquation du cadre choisi (micro-entreprise, couveuse ou coopérative, portage salarial, société) avec l'activité, les montants et la situation de la personne ; 5) les aides retenues : sont-elles cohérentes avec sa situation (ex. ARE et ARCE seulement pour une personne indemnisée par France Travail) ; 6) les obligations propres à ce cadre ou à cette activité qu'elle risque d'oublier (assurance, TVA si les montants s'en approchent, facturation).`,
+    checks: `1) le prix face aux solutions existantes repérées sur le terrain et à ce que son public peut payer ; 2) la clarté de l'offre : ce que le client reçoit, pour qui, et ce que ça change pour lui ; 3) le réalisme du nombre de ventes par mois pour quelqu'un qui démarre ; 4) l'adéquation du cadre choisi (micro-entreprise, couveuse, coopérative d'activité, portage salarial, artiste-auteure, société) avec l'activité, les montants et la situation de la personne ; 5) les aides retenues : sont-elles cohérentes avec sa situation (ex. ARE et ARCE seulement pour une personne indemnisée par France Travail) ; 6) les obligations propres à ce cadre ou à cette activité qu'elle risque d'oublier (assurance, TVA si les montants s'en approchent, facturation).`,
     blocking: `uniquement si le modèle ne peut pas fonctionner tel quel (ex. le cadre choisi est interdit pour cette activité, ou l'offre ne peut pas dégager de revenu)`,
     verdict: `"go" si elle peut passer à ses démarches tel quel, "adjust" s'il faut corriger quelques points, "rethink" si l'offre ou le cadre pose un problème de fond.`,
     steps: '4',
@@ -696,6 +698,7 @@ export class CreationService {
               `"priceLow" et "priceHigh": fourchette de prix courante en France pour une offre comparable, en euros, nombres entiers. Tiens compte des prix observés dans les retours et la concurrence s'ils existent. "priceUnit": l'unité (ex: "par séance", "par pièce", "par mois"). "priceRationale": une phrase qui explique d'où vient la fourchette. ` +
               `"timePerSaleHours": temps de travail réaliste pour une vente, préparation comprise, en heures (nombre). "monthlyFixedCosts": frais fixes mensuels typiques pour démarrer petit (assurance, outils, téléphone), en euros. ` +
               `Ne promets pas de résultat et n'invente pas de chiffre de marché. ` +
+              `Chaque texte se lit naturellement : ne répète pas le même mot dans une phrase (pas de "outils numériques… format numérique"). ` +
               hintRule +
               `Champs de "hints" : offerTitle, offerContent, keyBenefit, targetCustomer, coreProblem. Ils doivent proposer une autre formulation que tes propositions, pour donner une idée sans recopier. ` +
               `Réponds uniquement en JSON: {"offerTitle":"","targetCustomer":"","keyBenefit":"","offerContent":"","offerFormat":"","activityKind":"","priceLow":0,"priceHigh":0,"priceUnit":"","priceRationale":"","timePerSaleHours":0,"monthlyFixedCosts":0,"hints":{"offerTitle":"Ex : ...","offerContent":"Ex : ...","keyBenefit":"Ex : ...","targetCustomer":"Ex : ...","coreProblem":"Ex : ..."}}`,

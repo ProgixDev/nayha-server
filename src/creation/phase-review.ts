@@ -411,7 +411,7 @@ function businessModelIssues(journey: JourneyAnswers): ReviewIssue[] {
       step: 5,
       title: 'Ton cadre n’est pas encore choisi',
       problem:
-        'Tes démarches dépendent de ta façon de te lancer : micro-entreprise, couveuse, portage ou société.',
+        'Tes démarches dépendent de ta façon de te lancer : micro-entreprise, couveuse, coopérative, portage, artiste-auteure ou société.',
       suggestion:
         'Prends rendez-vous avec un conseiller (BGE, CCI, Chambre des métiers) pour trancher avant tes démarches.',
     });
